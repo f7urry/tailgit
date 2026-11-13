@@ -1,0 +1,499 @@
+//! The commit log: filter bar and a virtualized, painter-drawn table with the commit graph.
+
+use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
+use git_core::ops::ResetMode;
+use log_graph::{color_rgb, LineEnd, RowPrint};
+
+use crate::ops::Op;
+use crate::repo::RepoView;
+use crate::ui::dialogs::{self, Dialog};
+use crate::ui::{format_time, paint_avatar, ref_colors};
+
+const ROW_H: f32 = 26.0;
+const LANE_W: f32 = 14.0;
+const AUTHOR_W: f32 = 180.0;
+const HASH_W: f32 = 84.0;
+const DATE_W: f32 = 170.0;
+/// Width of the columns right of the subject.
+const META_W: f32 = AUTHOR_W + HASH_W + DATE_W;
+
+pub fn filter_bar(ui: &mut egui::Ui, view: &mut RepoView) {
+    let mut apply = false;
+    ui.horizontal_wrapped(|ui| {
+        let inputs = &mut view.log.inputs;
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut inputs.text)
+                .hint_text("\u{f002} Text or hash")
+                .desired_width(200.0),
+        );
+        apply |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        apply |= ui
+            .toggle_value(&mut inputs.regex, ".*")
+            .on_hover_text("Regex")
+            .changed();
+        apply |= ui
+            .toggle_value(&mut inputs.match_case, "Cc")
+            .on_hover_text("Match case")
+            .changed();
+        ui.separator();
+
+        let branch_text = inputs.branch.clone().unwrap_or_else(|| "All".into());
+        let mut branch_choice: Option<Option<String>> = None;
+        egui::ComboBox::from_id_salt("branch_filter")
+            .selected_text(format!("Branch: {branch_text}"))
+            .width(180.0)
+            .height(400.0)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(inputs.branch.is_none(), "All").clicked() {
+                    branch_choice = Some(None);
+                }
+                if ui.selectable_label(inputs.branch.as_deref() == Some("HEAD"), "HEAD").clicked() {
+                    branch_choice = Some(Some("HEAD".into()));
+                }
+                if let Some(d) = &view.log.data {
+                    for b in d.refs.local.iter().chain(d.refs.remote.iter()) {
+                        if ui
+                            .selectable_label(inputs.branch.as_deref() == Some(b.name.as_str()), &b.name)
+                            .clicked()
+                        {
+                            branch_choice = Some(Some(b.name.clone()));
+                        }
+                    }
+                }
+            });
+        if let Some(c) = branch_choice {
+            inputs.branch = c;
+            apply = true;
+        }
+
+        for (label, value, width, hint) in [
+            ("User:", &mut inputs.user, 110.0, "name, name2"),
+            ("After:", &mut inputs.after, 90.0, "2026-01-31"),
+            ("Before:", &mut inputs.before, 90.0, "yesterday"),
+            ("Paths:", &mut inputs.paths, 140.0, "src, README.md"),
+        ] {
+            ui.label(label);
+            let r = ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(width));
+            apply |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        }
+        if ui.button("Apply").clicked() {
+            apply = true;
+        }
+        if !inputs.is_empty() && ui.button("\u{f00d} Clear").clicked() {
+            *inputs = Default::default();
+            apply = true;
+        }
+        ui.separator();
+        if view.log.loading {
+            ui.spinner();
+        }
+        if let Some(d) = &view.log.data {
+            ui.weak(format!("{} commits", d.commits.len()));
+            if d.truncated && ui.small_button("Load more").clicked() {
+                view.load_more();
+            }
+        }
+    });
+    if apply {
+        view.apply_filter();
+    }
+}
+
+enum RowAction {
+    Select(usize),
+    Op(Op),
+    Dialog(Dialog),
+    Copy(String),
+}
+
+pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
+    if let Some(e) = &view.log.error {
+        ui.colored_label(crate::theme::sys::red(ui.visuals().dark_mode), e);
+    }
+    let Some(data) = view.log.data.as_ref() else {
+        ui.centered_and_justified(|ui| {
+            ui.spinner();
+        });
+        return;
+    };
+    let n = data.commits.len();
+    if n == 0 {
+        ui.centered_and_justified(|ui| {
+            ui.weak(if view.log.inputs.is_empty() {
+                "No commits yet"
+            } else {
+                "No commits match the filter"
+            });
+        });
+        return;
+    }
+    let dark = ui.visuals().dark_mode;
+    let head_hash = data.refs.head.hash().map(str::to_string);
+    let current = data.refs.head.branch_name().map(str::to_string);
+    let mut actions: Vec<RowAction> = Vec::new();
+
+    // Keyboard navigation when no text field has focus.
+    let no_focus = ui.ctx().memory(|m| m.focused().is_none());
+    if no_focus && view.dialog.is_none() {
+        let page = view.log.visible.len().max(1);
+        let sel = view.log.selected;
+        let (down, up, pgdn, pgup, home, end) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::PageDown),
+                i.key_pressed(egui::Key::PageUp),
+                i.key_pressed(egui::Key::Home),
+                i.key_pressed(egui::Key::End),
+            )
+        });
+        let target = match sel {
+            _ if home => Some(0),
+            _ if end => Some(n - 1),
+            Some(s) if down => Some((s + 1).min(n - 1)),
+            Some(s) if up => Some(s.saturating_sub(1)),
+            Some(s) if pgdn => Some((s + page).min(n - 1)),
+            Some(s) if pgup => Some(s.saturating_sub(page)),
+            None if down || up || pgdn || pgup => Some(0),
+            _ => None,
+        };
+        if let Some(t) = target {
+            actions.push(RowAction::Select(t));
+            view.log.scroll_to = Some(t);
+        }
+    }
+
+    // Header.
+    let header_h = 20.0;
+    let (hrect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), header_h), Sense::hover());
+    let hp = ui.painter_at(hrect);
+    let weak = ui.visuals().weak_text_color();
+    let font = FontId::proportional(13.0);
+    hp.text(Pos2::new(hrect.left() + 6.0, hrect.center().y), Align2::LEFT_CENTER, "Subject", font.clone(), weak);
+    hp.text(
+        Pos2::new(hrect.right() - META_W, hrect.center().y),
+        Align2::LEFT_CENTER,
+        "Author",
+        font.clone(),
+        weak,
+    );
+    hp.text(Pos2::new(hrect.right() - DATE_W - HASH_W, hrect.center().y), Align2::LEFT_CENTER, "Hash", font.clone(), weak);
+    hp.text(Pos2::new(hrect.right() - DATE_W, hrect.center().y), Align2::LEFT_CENTER, "Date", font.clone(), weak);
+    hp.line_segment(
+        [hrect.left_bottom(), hrect.right_bottom()],
+        Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+    );
+
+    let mut scroll = egui::ScrollArea::vertical()
+        .id_salt("log_scroll")
+        .auto_shrink([false, false]);
+    if let Some(t) = view.log.scroll_to.take() {
+        let vis = &view.log.visible;
+        if !(vis.start < t && t + 1 < vis.end) {
+            let rows_visible = vis.len().max(1);
+            let top = t.saturating_sub(rows_visible / 2);
+            scroll = scroll.vertical_scroll_offset(top as f32 * ROW_H);
+        }
+    }
+    let selected = view.log.selected;
+    let mut visible = 0..0;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        scroll.show_rows(ui, ROW_H, n, |ui, range| {
+            visible = range.clone();
+            let width = ui.available_width();
+            for i in range {
+                let c = &data.commits[i];
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, ROW_H), Sense::click());
+                let painter = ui.painter_at(rect);
+                let is_sel = selected == Some(i);
+                let is_merge = c.parents.len() > 1;
+                if is_sel {
+                    // Fork-style selection: full-width rounded orange bar.
+                    painter.rect_filled(rect.shrink2(Vec2::new(2.0, 1.0)), 6.0, crate::theme::sys::orange(dark));
+                } else if resp.hovered() {
+                    painter.rect_filled(rect.shrink2(Vec2::new(2.0, 1.0)), 6.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.5));
+                }
+                let text_color = if is_sel {
+                    Color32::WHITE
+                } else if is_merge {
+                    ui.visuals().weak_text_color()
+                } else {
+                    ui.visuals().text_color()
+                };
+                let weak_color = if is_sel { text_color } else { ui.visuals().weak_text_color() };
+
+                // Graph.
+                let rp = data.graph.row(i);
+                let is_head = head_hash.as_deref() == Some(c.hash.as_str());
+                let graph_w = paint_graph(&painter, rect, &rp, is_head, is_merge, dark);
+
+                // Subject area with ref badges.
+                let subject_rect = Rect::from_min_max(
+                    Pos2::new(rect.left() + graph_w + 4.0, rect.top()),
+                    Pos2::new(rect.right() - META_W - 8.0, rect.bottom()),
+                );
+                let sp = ui.painter_at(subject_rect);
+                let mut x = subject_rect.left();
+                if let Some(labels) = data.labels.get(&c.hash) {
+                    for (k, label) in labels.iter().enumerate() {
+                        if k == 3 {
+                            let g = sp.layout_no_wrap(format!("+{}", labels.len() - 3), FontId::proportional(11.0), weak_color);
+                            sp.galley(Pos2::new(x, rect.center().y - g.size().y / 2.0), g.clone(), weak_color);
+                            x += g.size().x + 6.0;
+                            break;
+                        }
+                        let (bg, tint) = ref_colors(label, dark);
+                        let (bg, fg, outline) = if is_sel {
+                            (Color32::WHITE, Color32::BLACK, Color32::WHITE)
+                        } else {
+                            (bg, ui.visuals().strong_text_color(), tint)
+                        };
+                        let font = FontId::proportional(12.5);
+                        let text = if label.is_current { format!("\u{f00c} {}", label.name) } else { label.name.clone() };
+                        let g = sp.layout_no_wrap(text, font, fg);
+                        let size = g.size() + Vec2::new(12.0, 4.0);
+                        let r = Rect::from_min_size(Pos2::new(x, rect.center().y - size.y / 2.0), size);
+                        sp.rect_filled(r, 4.0, bg);
+                        sp.rect_stroke(r, 4.0, Stroke::new(1.0, outline), egui::StrokeKind::Inside);
+                        sp.galley(r.min + Vec2::new(6.0, 2.0), g, fg);
+                        x += size.x + 5.0;
+                    }
+                }
+                paint_subject(&sp, Pos2::new(x + 2.0, rect.center().y), &c.subject, text_color, is_sel || !is_merge);
+                let ax = rect.right() - META_W;
+                let ap = ui.painter_at(Rect::from_min_max(
+                    Pos2::new(ax, rect.top()),
+                    Pos2::new(rect.right() - DATE_W - HASH_W - 6.0, rect.bottom()),
+                ));
+                paint_avatar(&ap, Rect::from_center_size(Pos2::new(ax + 8.0, rect.center().y), Vec2::splat(16.0)), &c.author_name, dark);
+                ap.text(
+                    Pos2::new(ax + 22.0, rect.center().y),
+                    Align2::LEFT_CENTER,
+                    &c.author_name,
+                    FontId::proportional(13.0),
+                    text_color,
+                );
+                painter.text(
+                    Pos2::new(rect.right() - DATE_W - HASH_W, rect.center().y),
+                    Align2::LEFT_CENTER,
+                    &c.hash[..c.hash.len().min(7)],
+                    FontId::monospace(12.5),
+                    text_color,
+                );
+                painter.text(
+                    Pos2::new(rect.right() - DATE_W, rect.center().y),
+                    Align2::LEFT_CENTER,
+                    format_time(c.commit_time),
+                    FontId::proportional(13.0),
+                    text_color,
+                );
+
+                if resp.clicked() || resp.secondary_clicked() {
+                    actions.push(RowAction::Select(i));
+                }
+                let resp = resp.on_hover_text_at_pointer(format!(
+                    "{}\n{} <{}>\n{}",
+                    c.short_hash(),
+                    c.author_name,
+                    c.author_email,
+                    crate::ui::format_full_time(c.author_time)
+                ));
+                resp.context_menu(|ui| row_menu(ui, c, current.as_deref(), &mut actions));
+            }
+        });
+    });
+    view.log.visible = visible;
+
+    for a in actions {
+        match a {
+            RowAction::Select(i) => view.select_row(i),
+            RowAction::Op(op) => view.run(op),
+            RowAction::Dialog(d) => view.dialog = Some(d),
+            RowAction::Copy(s) => ui.ctx().copy_text(s),
+        }
+    }
+}
+
+fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Option<&str>, actions: &mut Vec<RowAction>) {
+    let short = c.short_hash().to_string();
+    let mut act = |ui: &mut egui::Ui, label: &str, a: RowAction| {
+        if ui.button(label).clicked() {
+            actions.push(a);
+            ui.close();
+        }
+    };
+    act(ui, "Copy Revision Number", RowAction::Copy(c.hash.clone()));
+    act(ui, "Copy Subject", RowAction::Copy(c.subject.clone()));
+    ui.separator();
+    act(
+        ui,
+        "Checkout Revision",
+        RowAction::Dialog(
+            dialogs::confirm(
+                "Checkout Revision",
+                format!("Check out {short} in detached HEAD state?"),
+                Op::CheckoutDetached(c.hash.clone()),
+                false,
+            )
+            .expect("dialog"),
+        ),
+    );
+    act(
+        ui,
+        "New Branch…",
+        RowAction::Dialog(Dialog::NewBranch {
+            start: c.hash.clone(),
+            start_label: format!("{short} {}", c.subject),
+            name: String::new(),
+            checkout: true,
+        }),
+    );
+    act(
+        ui,
+        "New Tag…",
+        RowAction::Dialog(Dialog::NewTag {
+            target: c.hash.clone(),
+            target_label: format!("{short} {}", c.subject),
+            name: String::new(),
+            message: String::new(),
+        }),
+    );
+    ui.separator();
+    act(ui, "Cherry-Pick", RowAction::Op(Op::CherryPick(vec![c.hash.clone()])));
+    act(
+        ui,
+        "Revert Commit",
+        RowAction::Dialog(
+            dialogs::confirm(
+                "Revert Commit",
+                format!("Create a commit that reverts {short} \"{}\"?", c.subject),
+                Op::Revert(vec![c.hash.clone()]),
+                false,
+            )
+            .expect("dialog"),
+        ),
+    );
+    if let Some(cur) = current {
+        act(
+            ui,
+            &format!("Reset Current Branch ('{cur}') to Here…"),
+            RowAction::Dialog(Dialog::Reset {
+                target: c.hash.clone(),
+                label: format!("{short} {}", c.subject),
+                mode: ResetMode::Mixed,
+            }),
+        );
+        act(
+            ui,
+            &format!("Rebase '{cur}' onto Here"),
+            RowAction::Dialog(
+                dialogs::confirm(
+                    "Rebase",
+                    format!("Rebase '{cur}' onto {short}?"),
+                    Op::Rebase { onto: c.hash.clone() },
+                    false,
+                )
+                .expect("dialog"),
+            ),
+        );
+        act(
+            ui,
+            &format!("Merge into '{cur}'…"),
+            RowAction::Dialog(Dialog::Merge {
+                branch: c.hash.clone(),
+                no_ff: false,
+                squash: false,
+            }),
+        );
+    }
+}
+
+/// Subject text; a conventional-commit prefix (`fix:`, `feat(x):`) is drawn bold.
+fn paint_subject(p: &egui::Painter, pos: Pos2, subject: &str, color: Color32, bold_prefix: bool) {
+    let prefix_len = subject
+        .find(": ")
+        .filter(|&i| i <= 24 && subject[..i].chars().all(|c| c.is_alphanumeric() || "()-_!/".contains(c)))
+        .map(|i| i + 1);
+    let font = FontId::proportional(13.5);
+    let mut job = egui::text::LayoutJob::default();
+    match prefix_len {
+        Some(n) if bold_prefix => {
+            // Faux bold: the system font is loaded as a single weight.
+            job.append(&subject[..n], 0.0, egui::TextFormat::simple(font.clone(), color));
+            job.append(&subject[n..], 0.0, egui::TextFormat::simple(font, color));
+            let g = p.layout_job(job);
+            let top = Pos2::new(pos.x, pos.y - g.size().y / 2.0);
+            // Overdraw the prefix with a 0.5px offset to embolden it.
+            let prefix = p.layout_no_wrap(subject[..n].to_string(), FontId::proportional(13.5), color);
+            p.galley(top, g, color);
+            p.galley(top + Vec2::new(0.5, 0.0), prefix, color);
+        }
+        _ => {
+            p.text(pos, Align2::LEFT_CENTER, subject, font, color);
+        }
+    }
+}
+
+fn lane_x(rect: Rect, lane: usize) -> f32 {
+    rect.left() + 4.0 + LANE_W * (lane as f32 + 0.5)
+}
+
+/// Paints one graph row; returns the width used.
+fn paint_graph(painter: &egui::Painter, rect: Rect, rp: &RowPrint, is_head: bool, is_merge: bool, dark: bool) -> f32 {
+    let color = |id: i32| {
+        let [r, g, b] = color_rgb(id);
+        let c = Color32::from_rgb(r, g, b);
+        if dark {
+            c.gamma_multiply(1.15)
+        } else {
+            c
+        }
+    };
+    let mid = rect.center().y;
+    let mut max_lane = rp.lanes.max(1) - 1;
+    for l in &rp.lines {
+        max_lane = max_lane.max(l.from_lane).max(l.to_lane);
+        let x0 = lane_x(rect, l.from_lane);
+        let stroke = Stroke::new(1.6, color(l.color));
+        let edge_y = if l.up { rect.top() } else { rect.bottom() };
+        match l.end {
+            LineEnd::Normal => {
+                let x1 = (x0 + lane_x(rect, l.to_lane)) / 2.0;
+                painter.line_segment([Pos2::new(x0, mid), Pos2::new(x1, edge_y)], stroke);
+            }
+            LineEnd::Arrow => {
+                // Long edge continues off-row: arrow pointing along the edge.
+                let tip_y = if l.up { rect.top() + 3.0 } else { rect.bottom() - 3.0 };
+                painter.line_segment([Pos2::new(x0, mid), Pos2::new(x0, tip_y)], stroke);
+                let dy = if l.up { 4.0 } else { -4.0 };
+                painter.line_segment([Pos2::new(x0, tip_y), Pos2::new(x0 - 3.0, tip_y + dy)], stroke);
+                painter.line_segment([Pos2::new(x0, tip_y), Pos2::new(x0 + 3.0, tip_y + dy)], stroke);
+            }
+            LineEnd::Dangling => {
+                let y = mid + (rect.bottom() - mid) * 0.6;
+                painter.line_segment([Pos2::new(x0, mid), Pos2::new(x0, y)], Stroke::new(1.2, color(l.color).gamma_multiply(0.6)));
+            }
+        }
+    }
+    let center = Pos2::new(lane_x(rect, rp.node_lane), mid);
+    let nc = color(rp.node_color);
+    if is_merge {
+        // Merge commit: hollow ring with a small chevron, like Fork.
+        let bg = if dark { Color32::from_gray(30) } else { Color32::WHITE };
+        painter.circle_filled(center, 6.5, bg);
+        painter.circle_stroke(center, 6.0, Stroke::new(1.6, nc));
+        let s = Stroke::new(1.4, nc);
+        painter.line_segment([center + Vec2::new(-2.5, -0.8), center + Vec2::new(0.0, 1.8)], s);
+        painter.line_segment([center + Vec2::new(0.0, 1.8), center + Vec2::new(2.5, -0.8)], s);
+        if is_head {
+            painter.circle_stroke(center, 8.0, Stroke::new(1.2, nc));
+        }
+    } else if is_head {
+        painter.circle_filled(center, 4.5, nc);
+        painter.circle_stroke(center, 4.5, Stroke::new(1.5, if dark { Color32::WHITE } else { Color32::BLACK }));
+    } else {
+        painter.circle_filled(center, 3.8, nc);
+    }
+    8.0 + LANE_W * (max_lane as f32 + 1.0)
+}
