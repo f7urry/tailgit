@@ -40,11 +40,6 @@ pub fn icon_rgba() -> &'static (u32, Vec<u8>) {
     })
 }
 
-pub fn icon_data() -> egui::IconData {
-    let (n, rgba) = icon_rgba();
-    egui::IconData { rgba: rgba.clone(), width: *n, height: *n }
-}
-
 pub fn texture(ctx: &egui::Context) -> egui::TextureHandle {
     let id = egui::Id::unique("brand_icon_tex");
     if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {

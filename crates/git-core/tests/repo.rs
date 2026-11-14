@@ -315,3 +315,69 @@ fn merge_context_wording() {
     assert_eq!(ctx.theirs_column, "Theirs (main)");
     assert!(to_plain(&ctx.right_title).starts_with("Already rebased commits and commits from main"));
 }
+
+fn subjects(git: &Git) -> Vec<String> {
+    git.read(&["log", "--format=%s"]).unwrap().lines().map(str::to_string).collect()
+}
+
+#[test]
+fn drop_commit_removes_middle_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a\n", "A");
+    commit_file(&git, "b.txt", "b\n", "B");
+    commit_file(&git, "c.txt", "c\n", "C");
+    let b = ops::rev_parse(&git, "HEAD~1").unwrap();
+    ops::drop_commit(&git, &b).unwrap();
+    assert_eq!(subjects(&git), ["C", "A"]);
+    assert!(!git.root().join("b.txt").exists());
+    assert!(git.root().join("c.txt").exists());
+}
+
+#[test]
+fn drop_commit_keeps_uncommitted_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a\n", "A");
+    commit_file(&git, "b.txt", "b\n", "B");
+    commit_file(&git, "c.txt", "c\n", "C");
+    write(&git, "a.txt", "a changed\n");
+    let b = ops::rev_parse(&git, "HEAD~1").unwrap();
+    ops::drop_commit(&git, &b).unwrap();
+    assert_eq!(subjects(&git), ["C", "A"]);
+    assert_eq!(std::fs::read_to_string(git.root().join("a.txt")).unwrap(), "a changed\n");
+}
+
+#[test]
+fn drop_commit_rejects_root_and_foreign_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a\n", "A");
+    commit_file(&git, "b.txt", "b\n", "B");
+    let root = ops::rev_parse(&git, "HEAD~1").unwrap();
+    assert!(ops::drop_commit(&git, &root).is_err());
+    git.write(&["checkout", "-q", "-b", "side", "HEAD~1"]).unwrap();
+    commit_file(&git, "s.txt", "s\n", "S");
+    let side = ops::rev_parse(&git, "HEAD").unwrap();
+    git.write(&["checkout", "-q", "main"]).unwrap();
+    assert!(ops::drop_commit(&git, &side).is_err());
+}
+
+#[test]
+fn undo_drop_restores_head_only_if_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a\n", "A");
+    commit_file(&git, "b.txt", "b\n", "B");
+    commit_file(&git, "c.txt", "c\n", "C");
+    let old = ops::rev_parse(&git, "HEAD").unwrap();
+    let b = ops::rev_parse(&git, "HEAD~1").unwrap();
+    ops::drop_commit(&git, &b).unwrap();
+    let new = ops::rev_parse(&git, "HEAD").unwrap();
+    assert_eq!(ops::rev_parse(&git, "ORIG_HEAD").unwrap(), old);
+    commit_file(&git, "d.txt", "d\n", "D");
+    assert!(ops::undo_drop(&git, &old, &new).is_err());
+    git.write(&["reset", "--hard", &new]).unwrap();
+    ops::undo_drop(&git, &old, &new).unwrap();
+    assert_eq!(ops::rev_parse(&git, "HEAD").unwrap(), old);
+}

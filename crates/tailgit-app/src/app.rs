@@ -211,7 +211,6 @@ impl eframe::App for TailApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let mut open_request: Option<PathBuf> = None;
-        let mut close = false;
 
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
             self.show_settings = true;
@@ -233,7 +232,7 @@ impl eframe::App for TailApp {
             self.welcome(ui);
             return;
         }
-        let mut lay = self.layout;
+        let lay = self.layout;
         let settings = &mut self.settings;
         let view = self.repo.as_mut().expect("repo");
         if view.topo_order != settings.sort_topo {
@@ -298,17 +297,27 @@ impl eframe::App for TailApp {
                 .and_then(|d| d.refs.current_branch())
                 .map(|b| (b.ahead, b.behind))
                 .unwrap_or((0, 0));
-            ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 38.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add_space(if show_sidebar { 4.0 } else { 78.0 });
-                ui.spacing_mut().item_spacing.x = 2.0;
-                if tool_button(ui, "\u{f2f1}", "Refresh", 0, true).clicked() {
-                    view.refresh_all();
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let dark = ui.visuals().dark_mode;
+
+                if btn_group(ui, dark, |ui| [bar_button(ui, "\u{f07c}", "Open Folder", false, true)]).0.clicked() {
+                    open_request = rfd::FileDialog::new().pick_folder();
                 }
-                if tool_button(ui, "\u{f381}", "Fetch", 0, !busy).clicked() {
+                if btn_group(ui, dark, |ui| [bar_button(ui, "\u{f381}", "Fetch", false, !busy)]).0.clicked() {
                     view.run(Op::Fetch);
                 }
-                let pull = tool_button(ui, "\u{f0ab}", "Pull", behind, !busy);
-                egui::Popup::menu(&pull).show(|ui| {
+                let (pull_r, push_r, stash_r) = btn_group_3(ui, dark, |ui| {
+                    let pull_label = if behind > 0 { format!("Pull {behind}") } else { "Pull".to_string() };
+                    let push_label = if ahead > 0 { format!("Push {ahead}") } else { "Push".to_string() };
+                    (
+                        bar_button(ui, "\u{f0ab}", &pull_label, false, !busy),
+                        bar_button(ui, "\u{f0aa}", &push_label, false, !busy),
+                        bar_button(ui, "\u{f187}", "Stash", false, !busy),
+                    )
+                });
+                egui::Popup::menu(&pull_r).show(|ui| {
                     for (label, mode) in [
                         ("Pull (merge)", PullMode::Merge),
                         ("Pull (rebase)", PullMode::Rebase),
@@ -320,65 +329,20 @@ impl eframe::App for TailApp {
                         }
                     }
                 });
-                if tool_button(ui, "\u{f0aa}", "Push", ahead, !busy).clicked() {
+                if push_r.clicked() {
                     match ui::dialogs::push_dialog(view) {
                         Some(d) => view.dialog = Some(d),
                         None => view.notify(false, "Nothing to push: no current branch or no remotes".into()),
                     }
                 }
-                if tool_button(ui, "\u{f187}", "Stash", 0, !busy).clicked() {
+                if stash_r.clicked() {
                     view.dialog = Some(Dialog::Stash {
                         message: String::new(),
                         untracked: false,
                         keep_index: false,
                     });
                 }
-                ui.add_space(12.0);
 
-                // Centered repository / branch pill.
-                let right_w = 90.0;
-                let pill_w = (ui.available_width() - right_w - 12.0).clamp(160.0, 520.0);
-                let dark = ui.visuals().dark_mode;
-                egui::Frame::new()
-                    .fill(if dark { egui::Color32::from_white_alpha(10) } else { egui::Color32::from_black_alpha(10) })
-                    .corner_radius(8.0)
-                    .inner_margin(egui::Margin::symmetric(10, 3))
-                    .show(ui, |ui| {
-                        ui.set_width(pill_w - 20.0);
-                        ui.vertical_centered(|ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            ui.menu_button(RichText::new(&view.name).size(14.0).strong(), |ui| {
-                                if ui.button("Open Repository…").clicked() {
-                                    open_request = rfd::FileDialog::new().pick_folder();
-                                    ui.close();
-                                }
-                                ui.separator();
-                                for r in settings.recent.clone() {
-                                    if r != view.root && ui.button(&r).clicked() {
-                                        open_request = Some(PathBuf::from(r));
-                                        ui.close();
-                                    }
-                                }
-                                ui.separator();
-                                if ui.button("Close Repository").clicked() {
-                                    close = true;
-                                    ui.close();
-                                }
-                            });
-                            branch_menu(ui, view);
-                        });
-                    });
-
-                ui.add_space(6.0);
-                if tool_button(ui, "\u{f126}", "Branch", 0, !busy).clicked() {
-                    let head = view.log.data.as_ref().and_then(|d| d.refs.head.branch_name().map(str::to_string)).unwrap_or_else(|| "HEAD".into());
-                    view.dialog = Some(Dialog::NewBranch {
-                        start: "HEAD".into(),
-                        start_label: head,
-                        name: String::new(),
-                        checkout: true,
-                    });
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(8.0);
                     if ui.add(egui::Button::new("\u{f013}").frame(false)).on_hover_text("Settings (\u{2318},)").clicked() {
@@ -386,6 +350,46 @@ impl eframe::App for TailApp {
                     }
                     if let Some(b) = &view.busy {
                         ui.spinner().on_hover_text(format!("{b}\n{}", view.progress));
+                    }
+                    // Right group: views + new branch.
+                    let changes = view.change_count();
+                    let stashes = view.stashes.len();
+                    let before = view.tab;
+                    let cur = view.tab;
+                    let (lc, ac, st, br) = btn_group_4(ui, dark, |ui| {
+                        let lc_label = if changes > 0 { format!("Local Changes {changes}") } else { "Local Changes".to_string() };
+                        let st_label = if stashes > 0 { format!("Stashes {stashes}") } else { "Stashes".to_string() };
+                        (
+                            bar_button(ui, "\u{f15c}", &lc_label, cur == Tab::Commit, true),
+                            bar_button(ui, "\u{f1da}", "All Commits", cur == Tab::Log, true),
+                            bar_button(ui, "\u{f187}", &st_label, cur == Tab::Stash, true),
+                            bar_button(ui, "\u{f067}", "Branch", false, !busy),
+                        )
+                    });
+                    if lc.clicked() {
+                        view.tab = Tab::Commit;
+                    }
+                    if ac.clicked() {
+                        view.tab = Tab::Log;
+                    }
+                    if st.clicked() {
+                        view.tab = Tab::Stash;
+                    }
+                    if before != view.tab {
+                        view.diff = None;
+                        view.commit_selection = None;
+                        if view.tab == Tab::Commit {
+                            view.jobs.load_status();
+                        }
+                    }
+                    if br.clicked() {
+                        let head = view.log.data.as_ref().and_then(|d| d.refs.head.branch_name().map(str::to_string)).unwrap_or_else(|| "HEAD".into());
+                        view.dialog = Some(Dialog::NewBranch {
+                            start: "HEAD".into(),
+                            start_label: head,
+                            name: String::new(),
+                            checkout: true,
+                        });
                     }
                 });
             });
@@ -435,12 +439,14 @@ impl eframe::App for TailApp {
         egui::Panel::bottom("status_bar").frame(crate::theme::chrome(dark)).show_separator_line(false).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.toggle_value(&mut view.show_output, "Output");
-                // Centered pane-layout switcher.
-                let cx = ui.max_rect().center().x;
-                crate::ui::layout_switcher(ui, cx, &mut lay, "main");
                 if let Some((ok, text, _)) = &view.notice {
                     let color = if *ok { crate::theme::sys::green(ui.visuals().dark_mode) } else { crate::theme::sys::red(ui.visuals().dark_mode) };
                     ui.label(RichText::new(text).color(color));
+                }
+                if let Some(d) = view.last_drop.clone() {
+                    if ui.add_enabled(view.busy.is_none(), egui::Link::new("Undo")).clicked() {
+                        view.run(Op::UndoDrop { old_head: d.old_head, new_head: d.new_head });
+                    }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.weak(&view.root);
@@ -567,125 +573,62 @@ impl eframe::App for TailApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
 
-        if close {
-            self.repo = None;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title("TailGIT".into()));
-        }
         if let Some(p) = open_request {
             self.open(p, &ctx);
         }
     }
 }
 
-/// Toolbar button: large glyph over a small caption, with an optional count badge.
-fn tool_button(ui: &mut egui::Ui, icon: &str, label: &str, badge: u32, enabled: bool) -> egui::Response {
-    use egui::{Align2, FontId, Sense, Vec2};
-    let size = Vec2::new(58.0, 44.0);
-    let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
-    let v = ui.visuals();
-    let p = ui.painter();
-    if enabled && resp.hovered() {
-        p.rect_filled(rect, 6.0, v.widgets.hovered.weak_bg_fill.gamma_multiply(0.6));
-    }
-    let color = if enabled { v.text_color() } else { v.weak_text_color().gamma_multiply(0.6) };
-    p.text(rect.center_top() + Vec2::new(0.0, 14.0), Align2::CENTER_CENTER, icon, FontId::proportional(18.0), color);
-    p.text(rect.center_bottom() - Vec2::new(0.0, 9.0), Align2::CENTER_CENTER, label, FontId::proportional(11.5), if enabled { v.weak_text_color() } else { color });
-    if badge > 0 {
-        let c = rect.center_top() + Vec2::new(12.0, 6.0);
-        let text = badge.to_string();
-        let r = 7.0f32.max(3.5 * text.len() as f32 + 2.0);
-        p.rect_filled(egui::Rect::from_center_size(c, Vec2::new(r * 2.0, 14.0)), 7.0, egui::Color32::from_gray(if v.dark_mode { 110 } else { 120 }));
-        p.text(c, Align2::CENTER_CENTER, text, FontId::proportional(10.0), egui::Color32::WHITE);
-    }
-    resp
+/// Rounded dark container grouping toolbar buttons (Fork-style).
+fn group_frame<R>(ui: &mut egui::Ui, dark: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(if dark { egui::Color32::from_white_alpha(12) } else { egui::Color32::from_black_alpha(12) })
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(3, 3))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), add).inner
+        })
+        .inner
 }
 
-/// Sidebar header + navigation items + branch tree.
+fn btn_group(ui: &mut egui::Ui, dark: bool, add: impl FnOnce(&mut egui::Ui) -> [egui::Response; 1]) -> (egui::Response,) {
+    let [a] = group_frame(ui, dark, add);
+    (a,)
+}
+
+fn btn_group_3(ui: &mut egui::Ui, dark: bool, add: impl FnOnce(&mut egui::Ui) -> (egui::Response, egui::Response, egui::Response)) -> (egui::Response, egui::Response, egui::Response) {
+    group_frame(ui, dark, add)
+}
+
+fn btn_group_4(
+    ui: &mut egui::Ui,
+    dark: bool,
+    add: impl FnOnce(&mut egui::Ui) -> (egui::Response, egui::Response, egui::Response, egui::Response),
+) -> (egui::Response, egui::Response, egui::Response, egui::Response) {
+    // Right-to-left parent: lay the group out left-to-right inside.
+    group_frame(ui, dark, add)
+}
+
+/// Compact horizontal toolbar button: icon + label, highlighted when selected.
+fn bar_button(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool, enabled: bool) -> egui::Response {
+    let dark = ui.visuals().dark_mode;
+    let fill = if selected {
+        if dark { egui::Color32::from_white_alpha(24) } else { egui::Color32::from_black_alpha(24) }
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let color = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color().gamma_multiply(0.6) };
+    let text = RichText::new(format!("{icon} {label}")).size(12.5).color(color);
+    ui.add_enabled(enabled, egui::Button::new(text).fill(fill).corner_radius(6.0).min_size(egui::vec2(0.0, 26.0)))
+}
+
+/// Sidebar header + branch tree.
 fn sidebar(ui: &mut egui::Ui, view: &mut RepoView, settings: &mut Settings) {
-    use egui::{Align2, FontId, Sense, Vec2};
     ui.add_space(8.0);
     ui.label(RichText::new(&view.name).size(15.0).strong());
     ui.add_space(4.0);
-    let changes = view.change_count();
-    let stashes = view.stashes.len();
-    let before = view.tab;
-    let dark = ui.visuals().dark_mode;
-    for (tab, icon, label) in [
-        (Tab::Commit, "\u{f15c}", if changes > 0 { format!("Local Changes ({changes})") } else { "Local Changes".to_string() }),
-        (Tab::Log, "\u{f1da}", "All Commits".to_string()),
-        (Tab::Stash, "\u{f187}", if stashes > 0 { format!("Stashes ({stashes})") } else { "Stashes".to_string() }),
-    ] {
-        let w = ui.available_width();
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 26.0), Sense::click());
-        let p = ui.painter();
-        let sel = view.tab == tab;
-        if sel {
-            p.rect_filled(rect, 6.0, if dark { egui::Color32::from_white_alpha(18) } else { egui::Color32::from_black_alpha(18) });
-        } else if resp.hovered() {
-            p.rect_filled(rect, 6.0, if dark { egui::Color32::from_white_alpha(8) } else { egui::Color32::from_black_alpha(8) });
-        }
-        let fg = ui.visuals().text_color();
-        p.text(rect.left_center() + Vec2::new(14.0, 0.0), Align2::CENTER_CENTER, icon, FontId::proportional(14.0), fg);
-        p.text(rect.left_center() + Vec2::new(30.0, 0.0), Align2::LEFT_CENTER, label, FontId::proportional(14.0), fg);
-        if resp.clicked() {
-            view.tab = tab;
-        }
-    }
-    if before != view.tab {
-        view.diff = None;
-        view.commit_selection = None;
-        if view.tab == Tab::Commit {
-            view.jobs.load_status();
-        }
-    }
     ui.add_space(4.0);
     ui.separator();
     ui::branch_tree::show(ui, view, settings);
-}
-
-fn branch_menu(ui: &mut egui::Ui, view: &mut RepoView) {
-    let Some(data) = view.log.data.as_ref() else {
-        ui.spinner();
-        return;
-    };
-    let head = match &data.refs.head {
-        git_core::refs::Head::Branch { name, .. } | git_core::refs::Head::Unborn { name } => name.clone(),
-        git_core::refs::Head::Detached { hash } => format!("detached {}", &hash[..8.min(hash.len())]),
-    };
-    let current = data.refs.current_branch().cloned();
-    let locals: Vec<String> = data.refs.local.iter().map(|b| b.name.clone()).collect();
-    let mut op = None;
-    let mut dialog = None;
-    let label = match &current {
-        Some(b) if b.ahead > 0 || b.behind > 0 => format!("\u{f126} {head}  ↑{} ↓{}  ⌄", b.ahead, b.behind),
-        _ => format!("\u{f126} {head}  ⌄"),
-    };
-    ui.menu_button(RichText::new(label).size(12.0).weak(), |ui| {
-        if ui.button("New Branch…").clicked() {
-            dialog = Some(Dialog::NewBranch {
-                start: "HEAD".into(),
-                start_label: head.clone(),
-                name: String::new(),
-                checkout: true,
-            });
-            ui.close();
-        }
-        ui.separator();
-        ui.weak("Checkout");
-        egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-            for b in &locals {
-                let is_current = current.as_ref().is_some_and(|c| &c.name == b);
-                if ui.add_enabled(!is_current, egui::Button::new(b)).clicked() {
-                    op = Some(Op::Checkout(b.clone()));
-                    ui.close();
-                }
-            }
-        });
-    });
-    if let Some(d) = dialog {
-        view.dialog = Some(d);
-    }
-    if let Some(o) = op {
-        view.run(o);
-    }
 }

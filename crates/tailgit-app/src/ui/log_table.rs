@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use git_core::ops::ResetMode;
+use git_core::repo_state::RepoState;
 use log_graph::{color_rgb, LineEnd, RowPrint};
 
 use crate::ops::Op;
@@ -130,6 +131,7 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
     let dark = ui.visuals().dark_mode;
     let head_hash = data.refs.head.hash().map(str::to_string);
     let current = data.refs.head.branch_name().map(str::to_string);
+    let repo_state = view.state;
     let mut actions: Vec<RowAction> = Vec::new();
 
     // Keyboard navigation when no text field has focus.
@@ -299,7 +301,7 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
                     c.author_email,
                     crate::ui::format_full_time(c.author_time)
                 ));
-                resp.context_menu(|ui| row_menu(ui, c, current.as_deref(), &mut actions));
+                resp.context_menu(|ui| row_menu(ui, c, current.as_deref(), repo_state, &mut actions));
             }
         });
     });
@@ -315,7 +317,7 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
     }
 }
 
-fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Option<&str>, actions: &mut Vec<RowAction>) {
+fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Option<&str>, repo_state: RepoState, actions: &mut Vec<RowAction>) {
     let short = c.short_hash().to_string();
     let mut act = |ui: &mut egui::Ui, label: &str, a: RowAction| {
         if ui.button(label).clicked() {
@@ -374,6 +376,38 @@ fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Option<&str>,
             .expect("dialog"),
         ),
     );
+    let drop_block = if c.parents.len() != 1 {
+        Some(format!("Selected commit has {} parents", c.parents.len()))
+    } else if repo_state != RepoState::Normal {
+        let op = match repo_state {
+            RepoState::Rebasing => "rebase",
+            RepoState::Merging => "merge",
+            RepoState::CherryPicking => "cherry-pick",
+            _ => "revert",
+        };
+        Some(format!("Cannot drop commit during {op}"))
+    } else {
+        None
+    };
+    let drop_text = match current {
+        Some(cur) => format!("Do you want to drop 1 commit from the '{cur}' branch?"),
+        None => "The repository is in the detached HEAD state. Do you want to drop 1 commit?".to_string(),
+    };
+    let mut drop_action = None;
+    let mut resp = ui.add_enabled(drop_block.is_none(), egui::Button::new("Drop Commit"));
+    if let Some(reason) = &drop_block {
+        resp = resp.on_disabled_hover_text(reason);
+    }
+    if resp.clicked() {
+        drop_action = Some(RowAction::Dialog(Dialog::Confirm {
+            title: "Drop Commit".into(),
+            text: format!("{drop_text}\n\n{short} \"{}\"\n\nThis rewrites history; later commits get new hashes.", c.subject),
+            op: Op::DropCommit(c.hash.clone()),
+            danger: true,
+            ok: "Drop".into(),
+        }));
+        ui.close();
+    }
     if let Some(cur) = current {
         act(
             ui,
@@ -406,6 +440,9 @@ fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Option<&str>,
                 squash: false,
             }),
         );
+    }
+    if let Some(a) = drop_action {
+        actions.push(a);
     }
 }
 

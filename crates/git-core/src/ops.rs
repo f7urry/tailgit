@@ -144,6 +144,55 @@ pub fn rebase_onto(git: &Git, new_base: &str, upstream: &str, branch: Option<&st
     git.write(&args)
 }
 
+/// Resolves `rev` to a full commit hash.
+pub fn rev_parse(git: &Git, rev: &str) -> Result<String> {
+    Ok(git.read(&["rev-parse", "--verify", "-q", &format!("{rev}^{{commit}}")])?.trim().to_string())
+}
+
+/// Removes `hash` from the current branch (`rebase --autostash --onto <hash>^ <hash>`).
+/// Only a non-merge, non-root commit that is reachable from HEAD can be dropped, and
+/// not while another operation (rebase, merge, cherry-pick, revert) is in progress.
+pub fn drop_commit(git: &Git, hash: &str) -> Result<String> {
+    use crate::error::GitError;
+    use crate::repo_state::{read_state, RepoState};
+    let state = read_state(git);
+    if state != RepoState::Normal {
+        return Err(GitError::Invalid(format!(
+            "Cannot drop commit during {}",
+            match state {
+                RepoState::Rebasing => "rebase",
+                RepoState::Merging => "merge",
+                RepoState::CherryPicking => "cherry-pick",
+                _ => "revert",
+            }
+        )));
+    }
+    let parents = git.read(&["rev-list", "--parents", "-n", "1", hash])?;
+    let parts: Vec<&str> = parents.split_whitespace().collect();
+    if parts.len() != 2 {
+        return Err(GitError::Invalid(format!(
+            "Selected commit has {} parents; only a commit with exactly one parent can be dropped",
+            parts.len().saturating_sub(1)
+        )));
+    }
+    let reachable = git.exec(&["merge-base", "--is-ancestor", hash, "HEAD"], None, crate::runner::Access::Read)?;
+    if !reachable.success() {
+        return Err(GitError::Invalid("The commit is not in the current branch".into()));
+    }
+    let mut args = REBASE_CFG.to_vec();
+    args.extend(["rebase", "--autostash", "--onto", parts[1], hash]);
+    git.write(&args)
+}
+
+/// Undoes a drop: resets back to `old_head`, but only while HEAD is still `new_head`.
+pub fn undo_drop(git: &Git, old_head: &str, new_head: &str) -> Result<String> {
+    let head = rev_parse(git, "HEAD")?;
+    if head != new_head {
+        return Err(crate::error::GitError::Invalid("Cannot undo drop: HEAD has changed".into()));
+    }
+    git.write(&["reset", "--keep", old_head])
+}
+
 pub fn rebase_continue(git: &Git) -> Result<String> {
     let mut args = REBASE_CFG.to_vec();
     args.extend(["rebase", "--continue"]);

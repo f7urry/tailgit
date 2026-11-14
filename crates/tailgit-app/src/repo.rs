@@ -101,6 +101,13 @@ pub struct OutputEntry {
     pub time: chrono::DateTime<chrono::Local>,
 }
 
+/// Heads needed to undo the last drop.
+#[derive(Clone)]
+pub struct DropUndo {
+    pub old_head: String,
+    pub new_head: String,
+}
+
 pub struct RepoView {
     pub jobs: Jobs,
     rx: Receiver<Msg>,
@@ -132,6 +139,8 @@ pub struct RepoView {
     pub output: Vec<OutputEntry>,
     pub show_output: bool,
     pub notice: Option<(bool, String, Instant)>,
+    /// Set after a successful "Drop Commit"; enables the status bar Undo button.
+    pub last_drop: Option<DropUndo>,
     pub branch_search: String,
     pub commit_selection: Option<(bool, String)>,
     fs_dirty: Option<Instant>,
@@ -188,6 +197,7 @@ impl RepoView {
             output: Vec::new(),
             show_output: false,
             notice: None,
+            last_drop: None,
             branch_search: String::new(),
             commit_selection: None,
             fs_dirty: None,
@@ -559,9 +569,20 @@ impl RepoView {
                     text: text.clone(),
                     time: chrono::Local::now(),
                 });
+                // Undo stays available only until the next operation finishes.
+                let prev_drop = self.last_drop.take();
                 if ok {
                     self.notify(true, format!("{title}: done"));
                     match op {
+                        Op::DropCommit(ref h) => {
+                            let git = &self.jobs.git;
+                            let subject = git.read(&["log", "-1", "--format=%s", h]).unwrap_or_default().trim().to_string();
+                            if let (Ok(old_head), Ok(new_head)) = (git_core::ops::rev_parse(git, "ORIG_HEAD"), git_core::ops::rev_parse(git, "HEAD")) {
+                                self.notify(true, format!("Dropped 1 commit \"{subject}\""));
+                                self.last_drop = Some(DropUndo { old_head, new_head });
+                            }
+                        }
+                        Op::UndoDrop { .. } => self.notify(true, "Drop undone".into()),
                         Op::Commit { push_after, .. } => {
                             self.commit_message.clear();
                             self.amend = false;
@@ -577,7 +598,14 @@ impl RepoView {
                     }
                 } else {
                     let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("failed");
-                    self.notify(false, format!("{title}: {first}"));
+                    if matches!(op, Op::UndoDrop { .. }) {
+                        self.notify(false, format!("Undo drop failed: {first}"));
+                    } else {
+                        self.notify(false, format!("{title}: {first}"));
+                        if matches!(op, Op::DropCommit(_)) {
+                            self.last_drop = prev_drop;
+                        }
+                    }
                     self.open_conflicts_on_status = true;
                 }
                 if let Some(d) = &mut self.diff {

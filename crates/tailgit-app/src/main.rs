@@ -5,6 +5,7 @@
 mod app;
 mod brand;
 mod jobs;
+mod menubar;
 mod ops;
 mod repo;
 mod settings;
@@ -28,18 +29,23 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TailGIT")
-            .with_icon(std::sync::Arc::new(brand::icon_data()))
             .with_inner_size([1500.0, 900.0])
             .with_min_inner_size([900.0, 500.0])
             .with_fullsize_content_view(true)
             .with_title_shown(false)
             .with_titlebar_shown(false),
+        // Fewer swapchain drawables: each one is a full-window retina IOSurface.
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            surface: eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY,
+            ..Default::default()
+        },
         ..Default::default()
     };
     eframe::run_native(
         "TailGIT",
         options,
         Box::new(move |cc| {
+            menubar::install();
             theme::install(&cc.egui_ctx, &settings::Settings::load());
             Ok(Box::new(app::TailApp::new(cc, initial)))
         }),
