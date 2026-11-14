@@ -19,16 +19,21 @@ pub struct TailApp {
     error: Option<String>,
     was_focused: bool,
     show_sidebar: bool,
+    show_details: bool,
     layout: PaneLayout,
     show_settings: bool,
-    applied_font: crate::settings::UiFont,
+    applied_font: String,
+    applied_size: f32,
+    applied_weight: f32,
 }
 
 
 impl TailApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial: Option<PathBuf>) -> TailApp {
         let settings = Settings::load();
-        let settings_font = settings.ui_font;
+        let settings_font = settings.ui_font.clone();
+        let settings_size = settings.ui_font_size;
+        let settings_weight = settings.ui_font_weight;
         let mut app = TailApp {
             path_input: String::new(),
             settings,
@@ -36,9 +41,12 @@ impl TailApp {
             error: None,
             was_focused: true,
             show_sidebar: true,
+            show_details: true,
             layout: PaneLayout::All,
             show_settings: false,
             applied_font: settings_font,
+            applied_size: settings_size,
+            applied_weight: settings_weight,
         };
         crate::ui::settings_window::publish(&cc.egui_ctx, &app.settings);
         let start = initial.or_else(|| app.settings.recent.first().map(PathBuf::from));
@@ -222,9 +230,15 @@ impl eframe::App for TailApp {
                 if self.settings.appearance != prev_appearance {
                     crate::theme::apply_appearance(&ctx, self.settings.appearance);
                 }
-                if self.settings.ui_font != self.applied_font {
-                    self.applied_font = self.settings.ui_font;
-                    crate::theme::install_fonts(&ctx, self.applied_font);
+                crate::theme::apply_text_options(&ctx, self.settings.text_hinting, self.settings.text_subpixel);
+                if self.settings.ui_font != self.applied_font || self.settings.ui_font_weight != self.applied_weight {
+                    self.applied_font = self.settings.ui_font.clone();
+                    self.applied_weight = self.settings.ui_font_weight;
+                    crate::theme::install_fonts(&ctx, &self.applied_font, self.applied_weight);
+                }
+                if self.settings.ui_font_size != self.applied_size {
+                    self.applied_size = self.settings.ui_font_size;
+                    crate::theme::apply_font_size(&ctx, self.applied_size);
                 }
             }
         }
@@ -255,7 +269,18 @@ impl eframe::App for TailApp {
         ui.painter().rect_filled(ui.ctx().content_rect(), 0.0, crate::theme::gap_color(dark));
         // Full-height sidebar (Fork / Finder layout): sits under the window
         // controls; the toolbar spans only the content area to its right.
-        let show_sidebar = self.show_sidebar;
+        let mut show_sidebar = self.show_sidebar;
+        let mut show_details = self.show_details;
+        // Sidebar toggle, pinned next to the window controls in both states.
+        egui::Area::new(egui::Id::NULL.with("sidebar_toggle"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(82.0, 9.0))
+            .show(&ctx, |ui| {
+                let tip = if show_sidebar { "Hide sidebar" } else { "Show sidebar" };
+                if ui::pane_toggle(ui, false, show_sidebar, tip).clicked() {
+                    show_sidebar = !show_sidebar;
+                }
+            });
         let full_w = ui.ctx().content_rect().width();
         if (show_sidebar && lay == PaneLayout::All) || lay == PaneLayout::Left {
             let panel = egui::Panel::left("branches");
@@ -298,7 +323,7 @@ impl eframe::App for TailApp {
                 .map(|b| (b.ahead, b.behind))
                 .unwrap_or((0, 0));
             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 38.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.add_space(if show_sidebar { 4.0 } else { 78.0 });
+                ui.add_space(if show_sidebar { 4.0 } else { 116.0 });
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let dark = ui.visuals().dark_mode;
 
@@ -345,6 +370,10 @@ impl eframe::App for TailApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(8.0);
+                    let tip = if show_details { "Hide details pane" } else { "Show details pane" };
+                    if ui::pane_toggle(ui, true, show_details, tip).clicked() {
+                        show_details = !show_details;
+                    }
                     if ui.add(egui::Button::new("\u{f013}").frame(false)).on_hover_text("Settings (\u{2318},)").clicked() {
                         self.show_settings = true;
                     }
@@ -487,7 +516,7 @@ impl eframe::App for TailApp {
                 egui::CentralPanel::default().frame(isl((6, 6, 0, 3))).show(ui, |ui| ui::details::show(ui, view));
             }
             Tab::Log => {
-                if lay == PaneLayout::All {
+                if lay == PaneLayout::All && show_details {
                     egui::Panel::right("details")
                         .frame(isl((3, 6, 0, 3)))
                         .show_separator_line(false)
@@ -564,6 +593,7 @@ impl eframe::App for TailApp {
         }
 
         self.show_sidebar = show_sidebar;
+        self.show_details = show_details;
         self.layout = lay;
         view.auto_apply_non_conflicting = settings.merge_auto_apply;
         ui::conflicts::show(&ctx, view, settings);
@@ -580,10 +610,8 @@ impl eframe::App for TailApp {
 }
 
 /// Rounded dark container grouping toolbar buttons (Fork-style).
-fn group_frame<R>(ui: &mut egui::Ui, dark: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+fn group_frame<R>(ui: &mut egui::Ui, _dark: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
-        .fill(if dark { egui::Color32::from_white_alpha(12) } else { egui::Color32::from_black_alpha(12) })
-        .corner_radius(8.0)
         .inner_margin(egui::Margin::symmetric(3, 3))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;

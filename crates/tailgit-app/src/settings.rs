@@ -22,9 +22,21 @@ pub struct Settings {
     pub conflicts_group_by_dir: bool,
     #[serde(default)]
     pub appearance: Appearance,
-    /// Interface font: Inter (bundled) or the macOS system font.
+    /// Interface font family: "Inter" (bundled), "System" (SF Pro) or any installed family.
+    #[serde(default = "default_ui_font")]
+    pub ui_font: String,
+    /// Font hinting: snaps glyphs to the pixel grid for crisper text.
+    #[serde(default = "yes")]
+    pub text_hinting: bool,
+    /// Sub-pixel glyph positioning (smoother spacing, slightly blurrier).
     #[serde(default)]
-    pub ui_font: UiFont,
+    pub text_subpixel: bool,
+    /// Weight of the interface font (variable `wght` axis, 300-700).
+    #[serde(default = "default_ui_font_weight")]
+    pub ui_font_weight: f32,
+    /// Interface (body) font size in points.
+    #[serde(default = "default_ui_font_size")]
+    pub ui_font_size: f32,
     /// Diff view monospace font size in points.
     #[serde(default = "default_diff_font_size")]
     pub diff_font_size: f32,
@@ -36,6 +48,9 @@ pub struct Settings {
     pub sort_topo: bool,
 }
 
+fn default_ui_font() -> String { "Inter".into() }
+fn default_ui_font_weight() -> f32 { 450.0 }
+fn default_ui_font_size() -> f32 { 13.0 }
 fn default_diff_font_size() -> f32 { 12.5 }
 fn yes() -> bool { true }
 
@@ -47,12 +62,6 @@ pub enum Appearance {
     Dark,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UiFont {
-    #[default]
-    Inter,
-    System,
-}
 
 impl Default for Settings {
     fn default() -> Self {

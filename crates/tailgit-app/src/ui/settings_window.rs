@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, RichText};
 
-use crate::settings::{Appearance, Settings, UiFont};
+use crate::settings::{Appearance, Settings};
 
 /// Egui temp-data keys read by the diff view.
 pub const DIFF_FONT_SIZE: &str = "diff_font_size";
@@ -33,7 +33,7 @@ fn section(ui: &mut egui::Ui, title: &str) {
 
 /// Shows the window; returns true when any setting changed (already saved).
 pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
-    let before = (s.appearance, s.ui_font, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, s.merge_auto_apply);
+    let before = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, s.merge_auto_apply);
     egui::Window::new("Settings")
         .open(open)
         .collapsible(false)
@@ -51,15 +51,43 @@ pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
                     });
             });
             row(ui, "Interface font:", |ui| {
+                let filter_id = egui::Id::NULL.with("font_filter");
                 egui::ComboBox::from_id_salt("ui_font")
-                    .selected_text(match s.ui_font {
-                        UiFont::Inter => "Inter",
-                        UiFont::System => "System (SF Pro)",
+                    .selected_text(match s.ui_font.as_str() {
+                        "Inter" => "Inter (bundled)",
+                        "System" => "System (SF Pro)",
+                        n => n,
                     })
+                    .height(320.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut s.ui_font, UiFont::Inter, "Inter");
-                        ui.selectable_value(&mut s.ui_font, UiFont::System, "System (SF Pro)");
+                        let mut filter: String = ui.data_mut(|d| d.get_temp(filter_id).unwrap_or_default());
+                        ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Search fonts…").desired_width(180.0));
+                        ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+                        let q = filter.to_lowercase();
+                        for (id, label) in [("Inter", "Inter (bundled)"), ("System", "System (SF Pro)")] {
+                            if q.is_empty() || label.to_lowercase().contains(&q) {
+                                ui.selectable_value(&mut s.ui_font, id.to_string(), label);
+                            }
+                        }
+                        ui.separator();
+                        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                            for name in crate::theme::system_families() {
+                                if q.is_empty() || name.to_lowercase().contains(&q) {
+                                    ui.selectable_value(&mut s.ui_font, name.clone(), name);
+                                }
+                            }
+                        });
                     });
+            });
+            row(ui, "Font size:", |ui| {
+                ui.add(egui::DragValue::new(&mut s.ui_font_size).range(10.0..=20.0).speed(0.1).suffix(" pt"));
+            });
+
+            row(ui, "", |ui| {
+                ui.checkbox(&mut s.text_hinting, "Sharp text (font hinting)")
+                    .on_hover_text("Snap glyph outlines to the pixel grid for crisper text.");
+                ui.checkbox(&mut s.text_subpixel, "Sub-pixel text positioning")
+                    .on_hover_text("Smoother letter spacing, but text looks slightly blurrier.");
             });
 
             ui.separator();
@@ -85,7 +113,7 @@ pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
                 ui.checkbox(&mut s.merge_auto_apply, "Automatically apply non-conflicting changes");
             });
         });
-    let after = (s.appearance, s.ui_font, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, s.merge_auto_apply);
+    let after = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, s.merge_auto_apply);
     let changed = before != after;
     if changed {
         s.save();

@@ -39,10 +39,50 @@ pub mod sys {
 }
 
 pub fn install(ctx: &egui::Context, settings: &crate::settings::Settings) {
-    install_fonts(ctx, settings.ui_font);
-    ctx.set_style_of(Theme::Light, style(false));
-    ctx.set_style_of(Theme::Dark, style(true));
+    install_fonts(ctx, &settings.ui_font, settings.ui_font_weight);
+    apply_font_size(ctx, settings.ui_font_size);
+    apply_text_options(ctx, settings.text_hinting, settings.text_subpixel);
     apply_appearance(ctx, settings.appearance);
+}
+
+pub fn apply_text_options(ctx: &egui::Context, hinting: bool, subpixel: bool) {
+    for theme in [Theme::Light, Theme::Dark] {
+        ctx.style_mut_of(theme, |s| {
+            s.visuals.text_options.font_hinting = hinting;
+            s.visuals.text_options.subpixel_binning = subpixel;
+        });
+    }
+}
+
+pub fn apply_font_size(ctx: &egui::Context, size: f32) {
+    ctx.set_style_of(Theme::Light, style(false, size));
+    ctx.set_style_of(Theme::Dark, style(true, size));
+}
+
+/// Sorted family names of every installed font (plus the bundled/system entries).
+pub fn system_families() -> &'static [String] {
+    static FAMILIES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    FAMILIES.get_or_init(|| {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let mut names: Vec<String> = db.faces().filter_map(|f| f.families.first().map(|(n, _)| n.clone())).collect();
+        names.sort_by_key(|n| n.to_lowercase());
+        names.dedup();
+        names.retain(|n| !n.starts_with('.') && n != "Inter" && n != "System");
+        names
+    })
+}
+
+fn load_family(name: &str) -> Option<FontData> {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let q = fontdb::Query { families: &[fontdb::Family::Name(name)], ..Default::default() };
+    let id = db.query(&q)?;
+    db.with_face_data(id, |data, index| {
+        let mut fd = FontData::from_owned(data.to_vec());
+        fd.index = index;
+        fd
+    })
 }
 
 pub fn apply_appearance(ctx: &egui::Context, a: crate::settings::Appearance) {
@@ -58,15 +98,21 @@ fn load(path: &str) -> Option<FontData> {
     std::fs::read(path).ok().map(FontData::from_owned)
 }
 
-pub fn install_fonts(ctx: &egui::Context, ui_font: crate::settings::UiFont) {
+pub fn install_fonts(ctx: &egui::Context, ui_font: &str, weight: f32) {
     let mut fonts = FontDefinitions::default();
-    // Inter (SIL OFL 1.1) is bundled; the system font is the fallback and the alternative.
+    // Inter (SIL OFL 1.1) is bundled; "System" is SF Pro; anything else is an installed family.
     let system = || load("/System/Library/Fonts/SFNS.ttf").or_else(|| load("/System/Library/Fonts/HelveticaNeue.ttc"));
     let sans = match ui_font {
-        crate::settings::UiFont::Inter => Some(FontData::from_static(include_bytes!("../assets/Inter.ttf"))),
-        crate::settings::UiFont::System => system(),
+        "Inter" => Some(FontData::from_static(include_bytes!("../assets/Inter.ttf"))),
+        "System" => system(),
+        name => load_family(name),
     }
-    .or_else(system);
+    .or_else(|| Some(FontData::from_static(include_bytes!("../assets/Inter.ttf"))))
+    .map(|mut f| {
+        // Variable fonts (Inter, SF) honor the weight axis; static fonts ignore it.
+        f.tweak.coords = egui::epaint::text::VariationCoords::new([("wght", weight.clamp(100.0, 900.0))]);
+        f
+    });
     let mono = load("/System/Library/Fonts/SFNSMono.ttf")
         .or_else(|| load("/System/Library/Fonts/Menlo.ttc"));
     if let Some(f) = sans {
@@ -91,15 +137,15 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: crate::settings::UiFont) {
     ctx.set_fonts(fonts);
 }
 
-fn style(dark: bool) -> egui::Style {
+fn style(dark: bool, size: f32) -> egui::Style {
     let mut s = egui::Style {
         // macOS type ramp (points).
         text_styles: BTreeMap::from([
-            (TextStyle::Heading, FontId::proportional(15.0)),
-            (TextStyle::Body, FontId::proportional(13.0)),
-            (TextStyle::Button, FontId::proportional(13.0)),
-            (TextStyle::Small, FontId::proportional(11.0)),
-            (TextStyle::Monospace, FontId::monospace(12.0)),
+            (TextStyle::Heading, FontId::proportional(size + 2.0)),
+            (TextStyle::Body, FontId::proportional(size)),
+            (TextStyle::Button, FontId::proportional(size)),
+            (TextStyle::Small, FontId::proportional((size - 2.0).max(8.0))),
+            (TextStyle::Monospace, FontId::monospace(size - 1.0)),
         ]),
         ..Default::default()
     };

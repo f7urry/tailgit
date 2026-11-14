@@ -199,3 +199,29 @@ pub fn layout_switcher(ui: &mut egui::Ui, center_x: f32, lay: &mut PaneLayout, i
         layout_icon(ui, r, l, *lay == l, resp.hovered());
     }
 }
+
+/// macOS-style pane toggle: rounded window outline with a divider; the pane on
+/// `right` (or left) is shaded while it is shown. Returns the click response.
+pub fn pane_toggle(ui: &mut egui::Ui, right: bool, shown: bool, tip: &str) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(30.0, 24.0), egui::Sense::click());
+    let v = ui.visuals();
+    let p = ui.painter();
+    if resp.hovered() {
+        p.rect_filled(r, 6.0, if v.dark_mode { Color32::from_white_alpha(16) } else { Color32::from_black_alpha(16) });
+    }
+    let fg = if shown { v.strong_text_color() } else { v.weak_text_color() };
+    let b = egui::Rect::from_center_size(r.center(), egui::vec2(17.0, 13.0));
+    let x = if right { b.right() - 6.0 } else { b.left() + 6.0 };
+    if shown {
+        let pane = if right {
+            egui::Rect::from_min_max(egui::pos2(x, b.top()), b.max)
+        } else {
+            egui::Rect::from_min_max(b.min, egui::pos2(x, b.bottom()))
+        };
+        p.rect_filled(pane.shrink(1.3), 1.5, fg.gamma_multiply(0.45));
+    }
+    let stroke = egui::Stroke::new(1.3, fg);
+    p.rect_stroke(b, 3.0, stroke, egui::StrokeKind::Inside);
+    p.vline(x, b.y_range(), stroke);
+    resp.on_hover_text(tip)
+}
