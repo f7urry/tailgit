@@ -318,6 +318,7 @@ fn checkout_action(item: &Item, _ctx: &Ctx) -> Action {
 }
 
 fn menu(ui: &mut egui::Ui, item: &Item, ctx: &Ctx, actions: &mut Vec<Action>) {
+    ui.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
     let current = ctx.current.unwrap_or("HEAD");
     let name = &item.name;
     let mut act = |ui: &mut egui::Ui, label: String, a: Action| {

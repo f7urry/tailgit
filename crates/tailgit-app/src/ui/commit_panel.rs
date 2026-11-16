@@ -191,6 +191,7 @@ fn section(
 }
 
 fn entry_menu(ui: &mut egui::Ui, e: &StatusEntry, staged: bool, actions: &mut Vec<Action>) {
+    ui.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
     let paths = vec![e.path.clone()];
     if ui.button("Show Diff").clicked() {
         actions.push(Action::Diff(e.clone(), staged));

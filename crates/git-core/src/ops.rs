@@ -184,6 +184,52 @@ pub fn drop_commit(git: &Git, hash: &str) -> Result<String> {
     git.write(&args)
 }
 
+/// Drops several commits from the current branch. Commits are dropped newest first,
+/// so the older ones keep their hashes between steps. All are validated up front;
+/// on success `ORIG_HEAD` points at the HEAD from before the first drop.
+pub fn drop_commits(git: &Git, hashes: &[String]) -> Result<String> {
+    use crate::error::GitError;
+    if hashes.is_empty() {
+        return Err(GitError::Invalid("No commits to drop".into()));
+    }
+    if hashes.len() == 1 {
+        return drop_commit(git, &hashes[0]);
+    }
+    let mut order: Vec<(usize, &String)> = Vec::with_capacity(hashes.len());
+    for h in hashes {
+        let parents = git.read(&["rev-list", "--parents", "-n", "1", h])?;
+        let n = parents.split_whitespace().count().saturating_sub(1);
+        if n != 1 {
+            return Err(GitError::Invalid(format!(
+                "Commit {} has {n} parents; only commits with exactly one parent can be dropped",
+                &h[..h.len().min(7)]
+            )));
+        }
+        let reachable = git.exec(&["merge-base", "--is-ancestor", h, "HEAD"], None, crate::runner::Access::Read)?;
+        if !reachable.success() {
+            return Err(GitError::Invalid(format!("Commit {} is not in the current branch", &h[..h.len().min(7)])));
+        }
+        let range = format!("{h}..HEAD");
+        let depth: usize = git.read(&["rev-list", "--count", &range])?.trim().parse().unwrap_or(0);
+        order.push((depth, h));
+    }
+    order.sort_by_key(|(d, _)| *d);
+    order.dedup_by(|a, b| a.1 == b.1);
+    let orig = rev_parse(git, "HEAD")?;
+    let mut out = String::new();
+    for (k, (_, h)) in order.iter().enumerate() {
+        match drop_commit(git, h) {
+            Ok(o) => out.push_str(&o),
+            Err(e) if k > 0 => {
+                return Err(GitError::Invalid(format!("Dropped {k} of {} commits, then failed: {e}", order.len())));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    git.write(&["update-ref", "ORIG_HEAD", &orig])?;
+    Ok(out)
+}
+
 /// Undoes a drop: resets back to `old_head`, but only while HEAD is still `new_head`.
 pub fn undo_drop(git: &Git, old_head: &str, new_head: &str) -> Result<String> {
     let head = rev_parse(git, "HEAD")?;

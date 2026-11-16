@@ -381,3 +381,32 @@ fn undo_drop_restores_head_only_if_unchanged() {
     ops::undo_drop(&git, &old, &new).unwrap();
     assert_eq!(ops::rev_parse(&git, "HEAD").unwrap(), old);
 }
+
+#[test]
+fn drop_commits_removes_several_and_sets_orig_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a\n", "A");
+    commit_file(&git, "b.txt", "b\n", "B");
+    commit_file(&git, "c.txt", "c\n", "C");
+    commit_file(&git, "d.txt", "d\n", "D");
+    let old = ops::rev_parse(&git, "HEAD").unwrap();
+    let b = ops::rev_parse(&git, "HEAD~2").unwrap();
+    let d = ops::rev_parse(&git, "HEAD").unwrap();
+    // Oldest first on purpose: the function must reorder.
+    ops::drop_commits(&git, &[b, d]).unwrap();
+    assert_eq!(subjects(&git), ["C", "A"]);
+    assert_eq!(ops::rev_parse(&git, "ORIG_HEAD").unwrap(), old);
+}
+
+#[test]
+fn drop_commits_validates_all_before_rewriting() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a\n", "A");
+    commit_file(&git, "b.txt", "b\n", "B");
+    let root = ops::rev_parse(&git, "HEAD~1").unwrap();
+    let b = ops::rev_parse(&git, "HEAD").unwrap();
+    assert!(ops::drop_commits(&git, &[b, root]).is_err());
+    assert_eq!(subjects(&git), ["B", "A"]);
+}

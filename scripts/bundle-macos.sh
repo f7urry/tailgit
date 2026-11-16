@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Builds target/release/tailgit.app with the app icon.
-# Usage: scripts/bundle-macos.sh   (then: open target/release/tailgit.app)
+# Builds TailGIT.app with the app icon and installs it to ~/Applications
+# (overwriting any existing copy).
+# Usage: scripts/bundle-macos.sh   (then: open ~/Applications/TailGIT.app)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 cargo build --release -p tailgit-app
 
-APP=target/release/tailgit.app
+APP=target/release/TailGIT.app
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -51,3 +52,12 @@ PLIST
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 touch "$APP"
 echo "Built $APP"
+
+# Install: move the bundle into ~/Applications, replacing any previous copy.
+DEST_DIR="$HOME/Applications"
+DEST="$DEST_DIR/$(basename "$APP")"
+mkdir -p "$DEST_DIR"
+rm -rf "$DEST"
+mv "$APP" "$DEST"
+touch "$DEST"
+echo "Installed $DEST"

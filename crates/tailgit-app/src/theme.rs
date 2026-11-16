@@ -156,7 +156,7 @@ fn style(dark: bool, size: f32) -> egui::Style {
     sp.button_padding = Vec2::new(10.0, 3.0);
     sp.interact_size = Vec2::new(24.0, 22.0);
     sp.window_margin = Margin::same(16);
-    sp.menu_margin = Margin::same(6);
+    sp.menu_margin = Margin::same(10);
     sp.indent = 16.0;
     sp.icon_spacing = 6.0;
 

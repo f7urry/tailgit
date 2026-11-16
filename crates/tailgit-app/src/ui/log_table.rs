@@ -102,6 +102,9 @@ pub fn filter_bar(ui: &mut egui::Ui, view: &mut RepoView) {
 
 enum RowAction {
     Select(usize),
+    Toggle(usize),
+    Extend(usize),
+    SelectAll,
     Op(Op),
     Dialog(Dialog),
     Copy(String),
@@ -139,7 +142,7 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
     if no_focus && view.dialog.is_none() {
         let page = view.log.visible.len().max(1);
         let sel = view.log.selected;
-        let (down, up, pgdn, pgup, home, end) = ui.input(|i| {
+        let (down, up, pgdn, pgup, home, end, shift, all) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::ArrowDown),
                 i.key_pressed(egui::Key::ArrowUp),
@@ -147,6 +150,8 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
                 i.key_pressed(egui::Key::PageUp),
                 i.key_pressed(egui::Key::Home),
                 i.key_pressed(egui::Key::End),
+                i.modifiers.shift,
+                i.modifiers.command && i.key_pressed(egui::Key::A),
             )
         });
         let target = match sel {
@@ -159,8 +164,10 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
             None if down || up || pgdn || pgup => Some(0),
             _ => None,
         };
-        if let Some(t) = target {
-            actions.push(RowAction::Select(t));
+        if all {
+            actions.push(RowAction::SelectAll);
+        } else if let Some(t) = target {
+            actions.push(if shift { RowAction::Extend(t) } else { RowAction::Select(t) });
             view.log.scroll_to = Some(t);
         }
     }
@@ -197,7 +204,10 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
             scroll = scroll.vertical_scroll_offset(top as f32 * ROW_H);
         }
     }
-    let selected = view.log.selected;
+    let multi = &view.log.multi;
+    let sel_rows = view.selected_rows();
+    // Commits the context menu acts on when more than one is selected.
+    let sel_commits: Vec<&git_core::log::Commit> = sel_rows.iter().map(|&r| &data.commits[r]).collect();
     let mut visible = 0..0;
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -208,7 +218,7 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
                 let c = &data.commits[i];
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, ROW_H), Sense::click());
                 let painter = ui.painter_at(rect);
-                let is_sel = selected == Some(i);
+                let is_sel = multi.contains(&c.hash);
                 let is_merge = c.parents.len() > 1;
                 if is_sel {
                     // Fork-style selection: full-width rounded orange bar.
@@ -291,7 +301,17 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
                     text_color,
                 );
 
-                if resp.clicked() || resp.secondary_clicked() {
+                if resp.clicked() {
+                    let m = ui.input(|i| i.modifiers);
+                    actions.push(if m.shift {
+                        RowAction::Extend(i)
+                    } else if m.command || m.ctrl {
+                        RowAction::Toggle(i)
+                    } else {
+                        RowAction::Select(i)
+                    });
+                } else if resp.secondary_clicked() && !is_sel {
+                    // Right-click inside the selection keeps it, so the menu acts on all of it.
                     actions.push(RowAction::Select(i));
                 }
                 let resp = resp.on_hover_text_at_pointer(format!(
@@ -301,7 +321,13 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
                     c.author_email,
                     crate::ui::format_full_time(c.author_time)
                 ));
-                resp.context_menu(|ui| row_menu(ui, c, current.as_deref(), repo_state, &mut actions));
+                resp.context_menu(|ui| {
+                    if is_sel && sel_commits.len() > 1 {
+                        multi_menu(ui, &sel_commits, current.as_deref(), repo_state, &mut actions);
+                    } else {
+                        row_menu(ui, c, current.as_deref(), repo_state, &mut actions);
+                    }
+                });
             }
         });
     });
@@ -310,6 +336,9 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
     for a in actions {
         match a {
             RowAction::Select(i) => view.select_row(i),
+            RowAction::Toggle(i) => view.toggle_row(i),
+            RowAction::Extend(i) => view.extend_to_row(i),
+            RowAction::SelectAll => view.select_all_rows(),
             RowAction::Op(op) => view.run(op),
             RowAction::Dialog(d) => view.dialog = Some(d),
             RowAction::Copy(s) => ui.ctx().copy_text(s),
@@ -318,6 +347,7 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
 }
 
 fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Option<&str>, repo_state: RepoState, actions: &mut Vec<RowAction>) {
+    ui.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
     let short = c.short_hash().to_string();
     let mut act = |ui: &mut egui::Ui, label: &str, a: RowAction| {
         if ui.button(label).clicked() {
@@ -402,7 +432,7 @@ fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Option<&str>,
         drop_action = Some(RowAction::Dialog(Dialog::Confirm {
             title: "Drop Commit".into(),
             text: format!("{drop_text}\n\n{short} \"{}\"\n\nThis rewrites history; later commits get new hashes.", c.subject),
-            op: Op::DropCommit(c.hash.clone()),
+            op: Op::DropCommits(vec![c.hash.clone()]),
             danger: true,
             ok: "Drop".into(),
         }));
@@ -444,6 +474,120 @@ fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Option<&str>,
     if let Some(a) = drop_action {
         actions.push(a);
     }
+}
+
+/// Why history-rewriting ops are unavailable in the current repo state.
+fn busy_reason(repo_state: RepoState, what: &str) -> Option<String> {
+    let op = match repo_state {
+        RepoState::Normal => return None,
+        RepoState::Rebasing => "rebase",
+        RepoState::Merging => "merge",
+        RepoState::CherryPicking => "cherry-pick",
+        _ => "revert",
+    };
+    Some(format!("Cannot {what} during {op}"))
+}
+
+/// Context menu for several selected commits (`commits` is in log order, newest first).
+fn multi_menu(
+    ui: &mut egui::Ui,
+    commits: &[&git_core::log::Commit],
+    current: Option<&str>,
+    repo_state: RepoState,
+    actions: &mut Vec<RowAction>,
+) {
+    ui.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
+    let n = commits.len();
+    let list = |max: usize| {
+        let mut s: String = commits
+            .iter()
+            .take(max)
+            .map(|c| format!("{} \"{}\"", c.short_hash(), c.subject))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if n > max {
+            s.push_str(&format!("\n… and {} more", n - max));
+        }
+        s
+    };
+    let mut act = |ui: &mut egui::Ui, label: &str, enabled: Option<String>, a: RowAction| {
+        let mut r = ui.add_enabled(enabled.is_none(), egui::Button::new(label));
+        if let Some(reason) = &enabled {
+            r = r.on_disabled_hover_text(reason);
+        }
+        if r.clicked() {
+            actions.push(a);
+            ui.close();
+        }
+    };
+    ui.weak(format!("{n} commits selected"));
+    ui.separator();
+    act(
+        ui,
+        "Copy Revision Numbers",
+        None,
+        RowAction::Copy(commits.iter().map(|c| c.hash.as_str()).collect::<Vec<_>>().join("\n")),
+    );
+    act(
+        ui,
+        "Copy Subjects",
+        None,
+        RowAction::Copy(commits.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>().join("\n")),
+    );
+    ui.separator();
+    let busy = busy_reason(repo_state, "start another operation");
+    // Cherry-pick applies oldest first; revert undoes newest first.
+    let oldest_first: Vec<String> = commits.iter().rev().map(|c| c.hash.clone()).collect();
+    let newest_first: Vec<String> = commits.iter().map(|c| c.hash.clone()).collect();
+    act(
+        ui,
+        &format!("Cherry-Pick {n} Commits"),
+        busy.clone(),
+        RowAction::Dialog(
+            dialogs::confirm(
+                "Cherry-Pick",
+                format!("Cherry-pick {n} commits onto the current HEAD (oldest first)?\n\n{}", list(10)),
+                Op::CherryPick(oldest_first),
+                false,
+            )
+            .expect("dialog"),
+        ),
+    );
+    act(
+        ui,
+        &format!("Revert {n} Commits"),
+        busy,
+        RowAction::Dialog(
+            dialogs::confirm(
+                "Revert Commits",
+                format!("Create {n} commits that revert these (newest first)?\n\n{}", list(10)),
+                Op::Revert(newest_first.clone()),
+                false,
+            )
+            .expect("dialog"),
+        ),
+    );
+    let drop_block = commits
+        .iter()
+        .find(|c| c.parents.len() != 1)
+        .map(|c| format!("{} has {} parents; only commits with one parent can be dropped", c.short_hash(), c.parents.len()))
+        .or_else(|| busy_reason(repo_state, "drop commits"));
+    let drop_text = match current {
+        Some(cur) => format!("Do you want to drop {n} commits from the '{cur}' branch?"),
+        None => format!("The repository is in the detached HEAD state. Do you want to drop {n} commits?"),
+    };
+    act(
+        ui,
+        &format!("Drop {n} Commits"),
+        drop_block,
+        RowAction::Dialog(Dialog::Confirm {
+            title: "Drop Commits".into(),
+            text: format!("{drop_text}\n\n{}\n\nThis rewrites history; later commits get new hashes.", list(10)),
+            op: Op::DropCommits(newest_first),
+            danger: true,
+            ok: format!("Drop {n}"),
+        }),
+    );
 }
 
 /// Subject text; a conventional-commit prefix (`fix:`, `feat(x):`) is drawn bold.

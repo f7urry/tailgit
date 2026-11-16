@@ -43,6 +43,7 @@ pub fn show(ui: &mut egui::Ui, view: &mut RepoView) {
                     select = Some(s.hash.clone());
                 }
                 r.context_menu(|ui| {
+                    ui.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
                     let sel = s.selector.clone();
                     for (label, o) in [
                         ("Apply", Op::StashApply { selector: sel.clone(), index: false }),

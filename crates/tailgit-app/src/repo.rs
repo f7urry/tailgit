@@ -83,6 +83,11 @@ pub struct LogState {
     pub max_count: usize,
     pub selected: Option<usize>,
     pub selected_hash: Option<String>,
+    /// Every selected commit (multi-select with Shift / Cmd / Ctrl), including
+    /// `selected_hash`, which is the focused one shown in the details pane.
+    pub multi: std::collections::HashSet<String>,
+    /// Row a Shift range is extended from.
+    pub anchor: Option<String>,
     pub scroll_to: Option<usize>,
     pub visible: std::ops::Range<usize>,
 }
@@ -172,6 +177,8 @@ impl RepoView {
                 max_count: PAGE,
                 selected: None,
                 selected_hash: None,
+                multi: Default::default(),
+                anchor: None,
                 scroll_to: None,
                 visible: 0..0,
             },
@@ -257,7 +264,74 @@ impl RepoView {
         self.notice = Some((ok, text, Instant::now()));
     }
 
+    /// Plain selection: `row` becomes the only selected commit.
     pub fn select_row(&mut self, row: usize) {
+        let Some(c) = self.log.data.as_ref().and_then(|d| d.commits.get(row)) else { return };
+        let hash = c.hash.clone();
+        self.log.multi.clear();
+        self.log.multi.insert(hash.clone());
+        self.log.anchor = Some(hash);
+        self.focus_row(row);
+    }
+
+    /// Cmd/Ctrl-click: toggles `row` in the selection.
+    pub fn toggle_row(&mut self, row: usize) {
+        let Some(c) = self.log.data.as_ref().and_then(|d| d.commits.get(row)) else { return };
+        let hash = c.hash.clone();
+        self.log.anchor = Some(hash.clone());
+        if self.log.multi.remove(&hash) {
+            if self.log.multi.is_empty() {
+                self.log.multi.insert(hash);
+            } else if self.log.selected_hash.as_deref() == Some(hash.as_str()) {
+                // Move focus to the nearest remaining selected row.
+                if let Some(next) = self.selected_rows().into_iter().min_by_key(|r| r.abs_diff(row)) {
+                    self.focus_row(next);
+                }
+            }
+        } else {
+            self.log.multi.insert(hash);
+            self.focus_row(row);
+        }
+    }
+
+    /// Shift-click / Shift-arrow: selects the range from the anchor to `row`.
+    pub fn extend_to_row(&mut self, row: usize) {
+        let Some(data) = self.log.data.as_ref() else { return };
+        if row >= data.commits.len() {
+            return;
+        }
+        let anchor = self
+            .log
+            .anchor
+            .as_ref()
+            .and_then(|h| data.index.get(h).copied())
+            .or(self.log.selected)
+            .unwrap_or(row);
+        self.log.multi = data.commits[anchor.min(row)..=anchor.max(row)].iter().map(|c| c.hash.clone()).collect();
+        if self.log.anchor.is_none() {
+            self.log.anchor = Some(data.commits[anchor].hash.clone());
+        }
+        self.focus_row(row);
+    }
+
+    pub fn select_all_rows(&mut self) {
+        let Some(data) = self.log.data.as_ref() else { return };
+        self.log.multi = data.commits.iter().map(|c| c.hash.clone()).collect();
+        if self.log.selected.is_none() && !data.commits.is_empty() {
+            self.focus_row(0);
+        }
+    }
+
+    /// Selected rows in log order (newest first).
+    pub fn selected_rows(&self) -> Vec<usize> {
+        let Some(data) = self.log.data.as_ref() else { return Vec::new() };
+        let mut rows: Vec<usize> = self.log.multi.iter().filter_map(|h| data.index.get(h).copied()).collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    /// Makes `row` the focused commit (details pane) without touching the selection set.
+    fn focus_row(&mut self, row: usize) {
         let Some(data) = &self.log.data else { return };
         let Some(c) = data.commits.get(row) else { return };
         if self.log.selected_hash.as_deref() == Some(c.hash.as_str()) {
@@ -444,9 +518,11 @@ impl RepoView {
                             .as_ref()
                             .and_then(|h| data.index.get(h).copied());
                         self.log.selected = selected;
+                        self.log.multi.retain(|h| data.index.contains_key(h));
                         if selected.is_none() {
                             self.log.selected_hash = None;
                             self.details = None;
+                            self.log.multi.clear();
                         }
                         self.log.data = Some(data);
                         if self.log.selected.is_none() && !self.log.inputs.is_empty() {
@@ -574,11 +650,16 @@ impl RepoView {
                 if ok {
                     self.notify(true, format!("{title}: done"));
                     match op {
-                        Op::DropCommit(ref h) => {
+                        Op::DropCommits(ref h) => {
                             let git = &self.jobs.git;
-                            let subject = git.read(&["log", "-1", "--format=%s", h]).unwrap_or_default().trim().to_string();
+                            let msg = if h.len() == 1 {
+                                let subject = git.read(&["log", "-1", "--format=%s", &h[0]]).unwrap_or_default().trim().to_string();
+                                format!("Dropped 1 commit \"{subject}\"")
+                            } else {
+                                format!("Dropped {} commits", h.len())
+                            };
                             if let (Ok(old_head), Ok(new_head)) = (git_core::ops::rev_parse(git, "ORIG_HEAD"), git_core::ops::rev_parse(git, "HEAD")) {
-                                self.notify(true, format!("Dropped 1 commit \"{subject}\""));
+                                self.notify(true, msg);
                                 self.last_drop = Some(DropUndo { old_head, new_head });
                             }
                         }
@@ -602,7 +683,7 @@ impl RepoView {
                         self.notify(false, format!("Undo drop failed: {first}"));
                     } else {
                         self.notify(false, format!("{title}: {first}"));
-                        if matches!(op, Op::DropCommit(_)) {
+                        if matches!(op, Op::DropCommits(_)) {
                             self.last_drop = prev_drop;
                         }
                     }
