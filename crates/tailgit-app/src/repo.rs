@@ -34,6 +34,7 @@ pub struct FilterInputs {
     pub text: String,
     pub regex: bool,
     pub match_case: bool,
+    pub no_merges: bool,
     pub branch: Option<String>,
     pub user: String,
     pub after: String,
@@ -55,6 +56,7 @@ impl FilterInputs {
             text: self.text.trim().to_string(),
             regex: self.regex,
             match_case: self.match_case,
+            no_merges: self.no_merges,
             users: split(&self.user),
             after: self.after.clone(),
             before: self.before.clone(),
@@ -66,6 +68,7 @@ impl FilterInputs {
 
     pub fn is_empty(&self) -> bool {
         self.text.trim().is_empty()
+            && !self.no_merges
             && self.branch.is_none()
             && self.user.trim().is_empty()
             && self.after.trim().is_empty()

@@ -148,9 +148,11 @@ pub fn show(ctx: &egui::Context, view: &mut RepoView) {
         return;
     };
     let mut outcome = Outcome::Keep;
-    let modal = egui::Modal::new(egui::Id::unique("tailgit_dialog")).show(ctx, |ui| {
-        ui.set_min_width(380.0);
-        ui.set_max_width(560.0);
+    let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(24));
+    let modal = egui::Modal::new(egui::Id::unique("tailgit_dialog")).frame(frame).show(ctx, |ui| {
+        ui.set_min_width(420.0);
+        ui.set_max_width(580.0);
+        ui.spacing_mut().item_spacing = egui::vec2(10.0, 12.0);
         outcome = body(ui, &mut dialog);
     });
     if modal.should_close() && matches!(outcome, Outcome::Keep) {
@@ -166,8 +168,9 @@ pub fn show(ctx: &egui::Context, view: &mut RepoView) {
 
 fn buttons(ui: &mut egui::Ui, ok: &str, enabled: bool, danger: bool) -> Option<bool> {
     let mut res = None;
-    ui.add_space(8.0);
+    ui.add_space(12.0);
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
         let mut text = RichText::new(ok);
         if danger {
             text = text.color(crate::theme::sys::red(ui.visuals().dark_mode));
@@ -282,7 +285,7 @@ fn body(ui: &mut egui::Ui, dialog: &mut Dialog) -> Outcome {
             } else {
                 ui.label(format!("{local} has no upstream yet"));
             }
-            egui::Grid::new("push_grid").num_columns(2).show(ui, |ui| {
+            egui::Grid::new("push_grid").num_columns(2).spacing([16.0, 12.0]).show(ui, |ui| {
                 ui.label("Remote:");
                 egui::ComboBox::from_id_salt("push_remote")
                     .selected_text(remote.as_str())

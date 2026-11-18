@@ -98,6 +98,11 @@ impl Settings {
         self.save();
     }
 
+    pub fn clear_recent(&mut self) {
+        self.recent.clear();
+        self.save();
+    }
+
     pub fn is_favorite(&self, root: &str, name: &str) -> bool {
         self.favorites.get(root).is_some_and(|s| s.contains(name))
     }

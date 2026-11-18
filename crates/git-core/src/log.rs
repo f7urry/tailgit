@@ -104,6 +104,8 @@ pub struct LogFilter {
     pub text: String,
     pub regex: bool,
     pub match_case: bool,
+    /// Exclude merge commits (`--no-merges`).
+    pub no_merges: bool,
     /// Authors (`--author`, one per user).
     pub users: Vec<String>,
     /// `--after=` value (anything git understands, e.g. `2026-01-31` or `2 weeks ago`).
@@ -120,6 +122,7 @@ pub struct LogFilter {
 impl LogFilter {
     pub fn is_filtered(&self) -> bool {
         !self.text.trim().is_empty()
+            || self.no_merges
             || !self.users.is_empty()
             || !self.after.trim().is_empty()
             || !self.before.trim().is_empty()
@@ -170,6 +173,9 @@ pub fn log_args(filter: &LogFilter) -> Vec<String> {
         );
     } else {
         args.extend(filter.revisions.iter().cloned());
+    }
+    if filter.no_merges {
+        args.push("--no-merges".to_string());
     }
     if !filter.after.trim().is_empty() {
         args.push(format!("--after={}", filter.after.trim()));

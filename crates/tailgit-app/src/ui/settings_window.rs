@@ -34,12 +34,18 @@ fn section(ui: &mut egui::Ui, title: &str) {
 /// Shows the window; returns true when any setting changed (already saved).
 pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
     let before = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, s.merge_auto_apply);
-    egui::Window::new("Settings")
-        .open(open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(460.0)
-        .show(ctx, |ui| {
+    let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(24));
+    let modal = egui::Modal::new(egui::Id::NULL.with("settings_modal")).frame(frame).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.horizontal(|ui| {
+                ui.heading("Settings");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new("\u{f00d}").frame(false)).on_hover_text("Close").clicked() {
+                        *open = false;
+                    }
+                });
+            });
             section(ui, "Appearance");
             row(ui, "Theme:", |ui| {
                 egui::ComboBox::from_id_salt("appearance")
@@ -113,6 +119,9 @@ pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
                 ui.checkbox(&mut s.merge_auto_apply, "Automatically apply non-conflicting changes");
             });
         });
+    if modal.should_close() {
+        *open = false;
+    }
     let after = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, s.merge_auto_apply);
     let changed = before != after;
     if changed {

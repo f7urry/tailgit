@@ -134,10 +134,18 @@ pub fn show(ui: &mut egui::Ui, view: &mut RepoView, settings: &mut Settings) {
     let selected = view.log.inputs.branch.clone();
 
     let mut actions: Vec<Action> = Vec::new();
-    ui.add(
+    let search_box = ui.add(
         egui::TextEdit::singleline(&mut view.branch_search)
-            .hint_text("\u{f002} Branch or tag")
+            .hint_text("Branch or tag")
+            .margin(egui::Margin { left: 30, right: 10, top: 7, bottom: 7 })
             .desired_width(f32::INFINITY),
+    );
+    ui.painter().text(
+        search_box.rect.left_center() + egui::vec2(15.0, 0.0),
+        egui::Align2::CENTER_CENTER,
+        "\u{f002}",
+        egui::TextStyle::Body.resolve(ui.style()),
+        ui.visuals().weak_text_color(),
     );
     let search = view.branch_search.trim().to_lowercase();
     let ctx = Ctx {
