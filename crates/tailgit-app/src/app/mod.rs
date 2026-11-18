@@ -124,9 +124,7 @@ impl eframe::App for TailApp {
         let mut show_details = self.show_details;
 
         content::sidebar_panel(ui, view, settings, lay, show_sidebar, dark);
-        egui::Panel::top("toolbar").frame(crate::theme::chrome(dark)).show_separator_line(false).show(ui, |ui| {
-            toolbar::show(ui, view, settings, show_sidebar, &mut self.show_settings, &mut open_request);
-        });
+        toolbar::show(ui, view, settings, show_sidebar, &mut self.show_settings, &mut open_request);
         statusbar::state_banner(ui, view, dark);
         statusbar::status_bar(ui, view, dark, &mut show_sidebar, &mut show_details);
         content::tab_panels(ui, view, settings, lay, show_details, dark);
