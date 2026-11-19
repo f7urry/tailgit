@@ -2,17 +2,21 @@
 
 use eframe::egui::{self, RichText};
 
-use crate::settings::{Appearance, Settings};
+use crate::settings::{Appearance, LabelPosition, LabelStyle, Settings};
 
 /// Egui temp-data keys read by the diff view.
 pub const DIFF_FONT_SIZE: &str = "diff_font_size";
 pub const DIFF_MARKS: &str = "diff_marks";
+pub const LABEL_POSITION: &str = "label_position";
+pub const LABEL_STYLE: &str = "label_style";
 
 /// Pushes diff preferences to where the renderers read them.
 pub fn publish(ctx: &egui::Context, s: &Settings) {
     ctx.data_mut(|d| {
         d.insert_temp(egui::Id::NULL.with(DIFF_FONT_SIZE), s.diff_font_size);
         d.insert_temp(egui::Id::NULL.with(DIFF_MARKS), s.diff_marks);
+        d.insert_temp(egui::Id::NULL.with(LABEL_POSITION), s.label_position);
+        d.insert_temp(egui::Id::NULL.with(LABEL_STYLE), s.label_style);
     });
 }
 
@@ -33,7 +37,7 @@ fn section(ui: &mut egui::Ui, title: &str) {
 
 /// Shows the window; returns true when any setting changed (already saved).
 pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
-    let before = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, s.merge_auto_apply);
+    let before = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, (s.merge_auto_apply, s.label_position, s.label_style));
     let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(24));
     let modal = egui::Modal::new(egui::Id::NULL.with("settings_modal")).frame(frame).show(ctx, |ui| {
             ui.set_width(460.0);
@@ -113,6 +117,30 @@ pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
                 ui.radio_value(&mut s.sort_topo, false, "By date");
             });
 
+            row(ui, "Branch labels:", |ui| {
+                egui::ComboBox::from_id_salt("label_position")
+                    .width(220.0)
+                    .selected_text(LabelPosition::ALL.iter().find(|(v, _)| *v == s.label_position).map_or("", |(_, n)| *n))
+                    .show_ui(ui, |ui| {
+                        for (v, name) in LabelPosition::ALL {
+                            ui.selectable_value(&mut s.label_position, v, name);
+                        }
+                    });
+            });
+            row(ui, "Label style:", |ui| {
+                egui::ComboBox::from_id_salt("label_style")
+                    .width(220.0)
+                    .selected_text(LabelStyle::ALL.iter().find(|(v, _)| *v == s.label_style).map_or("", |(_, n)| *n))
+                    .show_ui(ui, |ui| {
+                        for (v, name) in LabelStyle::ALL {
+                            ui.selectable_value(&mut s.label_style, v, name);
+                        }
+                    });
+            });
+            row(ui, "Preview:", |ui| {
+                super::log_table::label_preview(ui, s.label_position, s.label_style);
+            });
+
             ui.separator();
             section(ui, "Merge");
             row(ui, "", |ui| {
@@ -122,7 +150,7 @@ pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
     if modal.should_close() {
         *open = false;
     }
-    let after = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, s.merge_auto_apply);
+    let after = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, (s.merge_auto_apply, s.label_position, s.label_style));
     let changed = before != after;
     if changed {
         s.save();

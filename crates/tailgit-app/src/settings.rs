@@ -46,6 +46,48 @@ pub struct Settings {
     /// Sort commits topologically instead of by date.
     #[serde(default)]
     pub sort_topo: bool,
+    /// Where branch / tag labels are drawn in the commit log.
+    #[serde(default)]
+    pub label_position: LabelPosition,
+    /// How branch / tag labels look.
+    #[serde(default)]
+    pub label_style: LabelStyle,
+    /// Commit log column order, widths and visibility.
+    #[serde(default)]
+    pub log_columns: LogColumns,
+}
+
+/// Commit log columns: ids are 0 Subject, 1 Branches, 2 Author, 3 Hash, 4 Date.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogColumns {
+    /// Left-to-right order of the five columns.
+    pub order: [usize; 5],
+    /// Widths of Branches, Author, Hash and Date.
+    pub widths: [f32; 4],
+    /// Whether Author, Hash and Date are shown.
+    pub visible: [bool; 3],
+}
+
+impl Default for LogColumns {
+    fn default() -> Self {
+        LogColumns { order: [0, 1, 2, 3, 4], widths: [230.0, 180.0, 84.0, 170.0], visible: [true; 3] }
+    }
+}
+
+impl LogColumns {
+    /// Falls back to defaults for anything that is not a valid saved layout.
+    pub fn sanitized(mut self) -> Self {
+        let mut seen = [false; 5];
+        let ok = self.order.iter().all(|&k| k < 5 && !std::mem::replace(&mut seen[k], true));
+        if !ok {
+            self.order = [0, 1, 2, 3, 4];
+        }
+        for w in &mut self.widths {
+            *w = if w.is_finite() { w.clamp(48.0, 800.0) } else { 150.0 };
+        }
+        self
+    }
 }
 
 fn default_ui_font() -> String { "Inter".into() }
@@ -62,6 +104,43 @@ pub enum Appearance {
     Dark,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LabelPosition {
+    Top,
+    #[default]
+    Bottom,
+    Left,
+    Right,
+    Column,
+    Hidden,
+}
+
+impl LabelPosition {
+    pub const ALL: [(LabelPosition, &'static str); 6] = [
+        (LabelPosition::Top, "On top of subject"),
+        (LabelPosition::Bottom, "On bottom of subject"),
+        (LabelPosition::Left, "On the left of subject"),
+        (LabelPosition::Right, "On the right of subject"),
+        (LabelPosition::Column, "Separate column"),
+        (LabelPosition::Hidden, "Not visible"),
+    ];
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LabelStyle {
+    #[default]
+    Colorful,
+    Accent,
+    Border,
+}
+
+impl LabelStyle {
+    pub const ALL: [(LabelStyle, &'static str); 3] = [
+        (LabelStyle::Colorful, "Colorful"),
+        (LabelStyle::Accent, "Accent color"),
+        (LabelStyle::Border, "Only border, no background"),
+    ];
+}
 
 impl Default for Settings {
     fn default() -> Self {

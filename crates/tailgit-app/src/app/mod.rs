@@ -52,6 +52,8 @@ impl TailApp {
             applied_weight: settings_weight,
         };
         crate::ui::settings_window::publish(&cc.egui_ctx, &app.settings);
+        app.settings.log_columns = app.settings.log_columns.clone().sanitized();
+        ui::log_table::set_log_columns(&cc.egui_ctx, app.settings.log_columns.clone());
         let start = initial.or_else(|| app.settings.recent.first().map(PathBuf::from));
         if let Some(p) = start {
             app.open(p, &cc.egui_ctx);
@@ -129,6 +131,12 @@ impl eframe::App for TailApp {
         statusbar::status_bar(ui, view, dark, &mut show_sidebar, &mut show_details);
         content::tab_panels(ui, view, settings, lay, show_details, dark);
 
+        // Save column order / widths / visibility once the drag or click is finished.
+        let cols = ui::log_table::log_columns(&ctx);
+        if cols != settings.log_columns && !ctx.input(|i| i.pointer.any_down()) {
+            settings.log_columns = cols;
+            settings.save();
+        }
         self.show_sidebar = show_sidebar;
         self.show_details = show_details;
         self.layout = lay;
