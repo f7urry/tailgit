@@ -55,6 +55,12 @@ pub struct Settings {
     /// Commit log column order, widths and visibility.
     #[serde(default)]
     pub log_columns: LogColumns,
+    /// Branch sidebar visibility (status bar toggle).
+    #[serde(default = "yes")]
+    pub show_sidebar: bool,
+    /// Details pane visibility (status bar toggle).
+    #[serde(default = "yes")]
+    pub show_details: bool,
 }
 
 /// Commit log columns: ids are 0 Subject, 1 Branches, 2 Author, 3 Hash, 4 Date.

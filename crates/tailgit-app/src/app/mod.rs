@@ -34,6 +34,8 @@ pub struct TailApp {
 impl TailApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial: Option<PathBuf>) -> TailApp {
         let settings = Settings::load();
+        let settings_sidebar = settings.show_sidebar;
+        let settings_details = settings.show_details;
         let settings_font = settings.ui_font.clone();
         let settings_size = settings.ui_font_size;
         let settings_weight = settings.ui_font_weight;
@@ -43,8 +45,8 @@ impl TailApp {
             repo: None,
             error: None,
             was_focused: true,
-            show_sidebar: true,
-            show_details: true,
+            show_sidebar: settings_sidebar,
+            show_details: settings_details,
             layout: PaneLayout::All,
             show_settings: false,
             applied_font: settings_font,
@@ -139,6 +141,11 @@ impl eframe::App for TailApp {
         }
         self.show_sidebar = show_sidebar;
         self.show_details = show_details;
+        if settings.show_sidebar != show_sidebar || settings.show_details != show_details {
+            settings.show_sidebar = show_sidebar;
+            settings.show_details = show_details;
+            settings.save();
+        }
         self.layout = lay;
         view.auto_apply_non_conflicting = settings.merge_auto_apply;
         ui::conflicts::show(&ctx, view, settings);
