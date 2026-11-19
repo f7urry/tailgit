@@ -8,15 +8,29 @@ use log_graph::{color_rgb, LineEnd, RowPrint};
 use crate::ops::Op;
 use crate::repo::RepoView;
 use crate::ui::dialogs::{self, Dialog};
-use crate::ui::{format_time, paint_avatar, ref_colors};
+use crate::ui::{format_time, paint_avatar};
 
 const ROW_H: f32 = 26.0;
 const LANE_W: f32 = 14.0;
 const AUTHOR_W: f32 = 180.0;
 const HASH_W: f32 = 84.0;
 const DATE_W: f32 = 170.0;
-/// Width of the columns right of the subject.
-const META_W: f32 = AUTHOR_W + HASH_W + DATE_W;
+const MIN_COL_W: f32 = 48.0;
+const MIN_SUBJECT_W: f32 = 160.0;
+
+/// User-resizable widths of the columns right of the subject.
+#[derive(Clone, Copy)]
+struct ColWidths {
+    author: f32,
+    hash: f32,
+    date: f32,
+}
+
+impl ColWidths {
+    fn meta(&self) -> f32 {
+        self.author + self.hash + self.date
+    }
+}
 
 /// Roomy single-line input used inside the filter popover.
 fn text_input<'a>(value: &'a mut String, hint: &str) -> egui::TextEdit<'a> {
@@ -262,22 +276,72 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
     let header_h = 20.0;
     let (hrect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), header_h), Sense::hover());
     let hp = ui.painter_at(hrect);
+    let cols_id = ui.scope_id().with("log_col_widths");
+    let mut cols: ColWidths = ui
+        .ctx()
+        .data_mut(|d| d.get_persisted::<[f32; 3]>(cols_id))
+        .map(|[author, hash, date]| ColWidths { author, hash, date })
+        .unwrap_or(ColWidths { author: AUTHOR_W, hash: HASH_W, date: DATE_W });
+    // Keep the subject usable when the window shrinks.
+    let max_meta = (hrect.width() - MIN_SUBJECT_W).max(MIN_COL_W * 3.0);
+    while cols.meta() > max_meta {
+        let f = max_meta / cols.meta();
+        cols.author = (cols.author * f).max(MIN_COL_W);
+        cols.hash = (cols.hash * f).max(MIN_COL_W);
+        cols.date = (cols.date * f).max(MIN_COL_W);
+        if f >= 1.0 || cols.meta() <= MIN_COL_W * 3.0 + 0.5 {
+            break;
+        }
+    }
+    let (hash_w, date_w) = (cols.hash, cols.date);
+    let meta_w = cols.meta();
     let weak = ui.visuals().weak_text_color();
     let font = FontId::proportional(13.0);
     hp.text(Pos2::new(hrect.left() + 6.0, hrect.center().y), Align2::LEFT_CENTER, "Subject", font.clone(), weak);
     hp.text(
-        Pos2::new(hrect.right() - META_W, hrect.center().y),
+        Pos2::new(hrect.right() - meta_w, hrect.center().y),
         Align2::LEFT_CENTER,
         "Author",
         font.clone(),
         weak,
     );
-    hp.text(Pos2::new(hrect.right() - DATE_W - HASH_W, hrect.center().y), Align2::LEFT_CENTER, "Hash", font.clone(), weak);
-    hp.text(Pos2::new(hrect.right() - DATE_W, hrect.center().y), Align2::LEFT_CENTER, "Date", font.clone(), weak);
+    hp.text(Pos2::new(hrect.right() - date_w - hash_w, hrect.center().y), Align2::LEFT_CENTER, "Hash", font.clone(), weak);
+    hp.text(Pos2::new(hrect.right() - date_w, hrect.center().y), Align2::LEFT_CENTER, "Date", font.clone(), weak);
     hp.line_segment(
         [hrect.left_bottom(), hrect.right_bottom()],
         Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
     );
+    // Drag handles on the left edge of each meta column; dragging left widens the column.
+    let handles = [(0usize, hrect.right() - meta_w), (1, hrect.right() - date_w - hash_w), (2, hrect.right() - date_w)];
+    let mut new_cols = cols;
+    for (k, x) in handles {
+        let hit = Rect::from_center_size(Pos2::new(x - 4.0, hrect.center().y), Vec2::new(8.0, header_h));
+        let r = ui.interact(hit, ui.scope_id().with(("log_col_handle", k)), Sense::drag());
+        if r.hovered() || r.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        let color = if r.hovered() || r.dragged() {
+            ui.visuals().widgets.active.bg_stroke.color
+        } else {
+            ui.visuals().widgets.noninteractive.bg_stroke.color
+        };
+        hp.line_segment(
+            [Pos2::new(x - 4.0, hrect.top() + 4.0), Pos2::new(x - 4.0, hrect.bottom() - 4.0)],
+            Stroke::new(1.0, color),
+        );
+        if r.dragged() {
+            let w = match k {
+                0 => &mut new_cols.author,
+                1 => &mut new_cols.hash,
+                _ => &mut new_cols.date,
+            };
+            *w = (*w - r.drag_delta().x).max(MIN_COL_W);
+        }
+    }
+    if new_cols.meta() <= max_meta || new_cols.meta() < cols.meta() {
+        cols = new_cols;
+    }
+    ui.ctx().data_mut(|d| d.insert_persisted(cols_id, [cols.author, cols.hash, cols.date]));
 
     let mut scroll = egui::ScrollArea::vertical()
         .id_salt("log_scroll")
@@ -329,40 +393,41 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
                 // Subject area with ref badges.
                 let subject_rect = Rect::from_min_max(
                     Pos2::new(rect.left() + graph_w + 4.0, rect.top()),
-                    Pos2::new(rect.right() - META_W - 8.0, rect.bottom()),
+                    Pos2::new(rect.right() - meta_w - 8.0, rect.bottom()),
                 );
                 let sp = ui.painter_at(subject_rect);
-                let mut x = subject_rect.left();
+                let sub_w = paint_subject(&sp, Pos2::new(subject_rect.left() + 2.0, rect.center().y), &c.subject, text_color, is_sel || !is_merge);
+                // Ref badges sit to the right of the subject.
+                let mut x = subject_rect.left() + 2.0 + sub_w + 10.0;
                 if let Some(labels) = data.labels.get(&c.hash) {
+                    let accent = crate::theme::sys::orange(dark);
                     for (k, label) in labels.iter().enumerate() {
                         if k == 3 {
                             let g = sp.layout_no_wrap(format!("+{}", labels.len() - 3), FontId::proportional(11.0), weak_color);
                             sp.galley(Pos2::new(x, rect.center().y - g.size().y / 2.0), g.clone(), weak_color);
-                            x += g.size().x + 6.0;
                             break;
                         }
-                        let (bg, tint) = ref_colors(label, dark);
-                        let (bg, fg, outline) = if is_sel {
+                        // Current branch: solid accent pill; everything else: outlined pill.
+                        let (bg, fg, outline) = if label.is_current && !is_sel {
+                            (accent, Color32::WHITE, accent)
+                        } else if is_sel {
                             (Color32::WHITE, Color32::BLACK, Color32::WHITE)
                         } else {
-                            (bg, ui.visuals().strong_text_color(), tint)
+                            (ui.visuals().extreme_bg_color, ui.visuals().strong_text_color(), accent)
                         };
-                        let font = FontId::proportional(12.5);
-                        let text = if label.is_current { format!("\u{f00c} {}", label.name) } else { label.name.clone() };
-                        let g = sp.layout_no_wrap(text, font, fg);
-                        let size = g.size() + Vec2::new(12.0, 4.0);
+                        let g = sp.layout_no_wrap(label.name.clone(), FontId::proportional(12.5), fg);
+                        let size = g.size() + Vec2::new(16.0, 4.0);
                         let r = Rect::from_min_size(Pos2::new(x, rect.center().y - size.y / 2.0), size);
-                        sp.rect_filled(r, 4.0, bg);
-                        sp.rect_stroke(r, 4.0, Stroke::new(1.0, outline), egui::StrokeKind::Inside);
-                        sp.galley(r.min + Vec2::new(6.0, 2.0), g, fg);
-                        x += size.x + 5.0;
+                        sp.rect_filled(r, size.y / 2.0, bg);
+                        sp.rect_stroke(r, size.y / 2.0, Stroke::new(1.0, outline), egui::StrokeKind::Inside);
+                        sp.galley(r.min + Vec2::new(8.0, 2.0), g, fg);
+                        x += size.x + 6.0;
                     }
                 }
-                paint_subject(&sp, Pos2::new(x + 2.0, rect.center().y), &c.subject, text_color, is_sel || !is_merge);
-                let ax = rect.right() - META_W;
+                let ax = rect.right() - meta_w;
                 let ap = ui.painter_at(Rect::from_min_max(
                     Pos2::new(ax, rect.top()),
-                    Pos2::new(rect.right() - DATE_W - HASH_W - 6.0, rect.bottom()),
+                    Pos2::new(rect.right() - date_w - hash_w - 6.0, rect.bottom()),
                 ));
                 paint_avatar(&ap, Rect::from_center_size(Pos2::new(ax + 8.0, rect.center().y), Vec2::splat(16.0)), &c.author_name, dark);
                 ap.text(
@@ -373,14 +438,14 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
                     text_color,
                 );
                 painter.text(
-                    Pos2::new(rect.right() - DATE_W - HASH_W, rect.center().y),
+                    Pos2::new(rect.right() - date_w - hash_w, rect.center().y),
                     Align2::LEFT_CENTER,
                     &c.hash[..c.hash.len().min(7)],
                     FontId::monospace(12.5),
                     text_color,
                 );
                 painter.text(
-                    Pos2::new(rect.right() - DATE_W, rect.center().y),
+                    Pos2::new(rect.right() - date_w, rect.center().y),
                     Align2::LEFT_CENTER,
                     format_time(c.commit_time),
                     FontId::proportional(13.0),
@@ -677,7 +742,7 @@ fn multi_menu(
 }
 
 /// Subject text; a conventional-commit prefix (`fix:`, `feat(x):`) is drawn bold.
-fn paint_subject(p: &egui::Painter, pos: Pos2, subject: &str, color: Color32, bold_prefix: bool) {
+fn paint_subject(p: &egui::Painter, pos: Pos2, subject: &str, color: Color32, bold_prefix: bool) -> f32 {
     let prefix_len = subject
         .find(": ")
         .filter(|&i| i <= 24 && subject[..i].chars().all(|c| c.is_alphanumeric() || "()-_!/".contains(c)))
@@ -690,15 +755,15 @@ fn paint_subject(p: &egui::Painter, pos: Pos2, subject: &str, color: Color32, bo
             job.append(&subject[..n], 0.0, egui::TextFormat::simple(font.clone(), color));
             job.append(&subject[n..], 0.0, egui::TextFormat::simple(font, color));
             let g = p.layout_job(job);
+            let w = g.size().x + 0.5;
             let top = Pos2::new(pos.x, pos.y - g.size().y / 2.0);
             // Overdraw the prefix with a 0.5px offset to embolden it.
             let prefix = p.layout_no_wrap(subject[..n].to_string(), FontId::proportional(13.5), color);
             p.galley(top, g, color);
             p.galley(top + Vec2::new(0.5, 0.0), prefix, color);
+            w
         }
-        _ => {
-            p.text(pos, Align2::LEFT_CENTER, subject, font, color);
-        }
+        _ => p.text(pos, Align2::LEFT_CENTER, subject, font, color).width(),
     }
 }
 
