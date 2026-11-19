@@ -88,7 +88,8 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
                 );
                 let labels = labels_of(&c.hash).map(|l| l.as_slice()).unwrap_or(&[]);
                 let is_sel = multi.contains(&c.hash);
-                row(ui, &ctx, i, c, &data.graph.row(i), rect, labels, is_sel, &mut actions);
+                let graph = data.graph.row(i);
+                row(ui, &ctx, &RowData { i, c, graph: &graph, rect, labels, is_sel }, &mut actions);
             }
         });
     });
@@ -166,51 +167,65 @@ fn keyboard_action(ui: &egui::Ui, view: &mut RepoView, n: usize) -> Option<RowAc
     Some(if shift { RowAction::Extend(target) } else { RowAction::Select(target) })
 }
 
-/// Paints one commit row and records its click / context-menu actions.
-#[allow(clippy::too_many_arguments)]
-fn row(
-    ui: &mut egui::Ui,
-    ctx: &RowCtx,
+/// One commit row to paint: its data, graph segment, geometry and selection state.
+struct RowData<'a> {
     i: usize,
-    c: &Commit,
-    graph: &RowPrint,
+    c: &'a Commit,
+    graph: &'a RowPrint,
     rect: Rect,
-    labels: &[RefLabel],
+    labels: &'a [RefLabel],
     is_sel: bool,
-    actions: &mut Vec<RowAction>,
-) {
-    let dark = ctx.dark;
-    let (label_pos, label_style) = (ctx.label_pos, label_prefs(ui.ctx()).1);
-    let resp = ui.interact(rect, ui.scope_id().with(("log_row", i)), Sense::click());
+}
+
+/// Paints one commit row and records its click / context-menu actions.
+fn row(ui: &mut egui::Ui, ctx: &RowCtx, r: &RowData, actions: &mut Vec<RowAction>) {
+    let resp = ui.interact(r.rect, ui.scope_id().with(("log_row", r.i)), Sense::click());
+    paint_background(ui, ctx, r, resp.hovered());
+    paint_cells(ui, ctx, r);
+    handle_interaction(ui, ctx, r, resp, actions);
+}
+
+/// Selection / hover background, inset so it reads as a rounded pill.
+fn paint_background(ui: &egui::Ui, ctx: &RowCtx, r: &RowData, hovered: bool) {
+    let painter = ui.painter_at(r.rect);
+    let bg = r.rect.shrink2(Vec2::new(2.0, 1.0));
+    if r.is_sel {
+        // Soft orange tint with an orange outline.
+        let o = crate::theme::sys::orange(ctx.dark);
+        painter.rect_filled(bg, 6.0, o.gamma_multiply(if ctx.dark { 0.30 } else { 0.28 }));
+        painter.rect_stroke(bg, 6.0, Stroke::new(1.0, o.gamma_multiply(0.45)), egui::StrokeKind::Inside);
+    } else if hovered {
+        painter.rect_filled(bg, 6.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.5));
+    }
+}
+
+/// Paints the graph, subject, labels and metadata cells.
+fn paint_cells(ui: &egui::Ui, ctx: &RowCtx, r: &RowData) {
+    let (c, rect, labels) = (r.c, r.rect, r.labels);
+    let (dark, label_pos) = (ctx.dark, ctx.label_pos);
+    let label_style = label_prefs(ui.ctx()).1;
     let painter = ui.painter_at(rect);
     let row_h = rect.height();
     let cy = rect.top() + if label_pos == LabelPosition::Top { row_h - ROW_H } else { 0.0 } + ROW_H / 2.0;
     let is_merge = c.parents.len() > 1;
-
-    // Background.
-    let bg = rect.shrink2(Vec2::new(2.0, 1.0));
-    if is_sel {
-        // Soft orange tint with an orange outline.
-        let o = crate::theme::sys::orange(dark);
-        painter.rect_filled(bg, 6.0, o.gamma_multiply(if dark { 0.30 } else { 0.28 }));
-        painter.rect_stroke(bg, 6.0, Stroke::new(1.0, o.gamma_multiply(0.45)), egui::StrokeKind::Inside);
-    } else if resp.hovered() {
-        painter.rect_filled(bg, 6.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.5));
-    }
     let weak_color = ui.visuals().weak_text_color();
-    let text_color = if is_merge && !is_sel { weak_color } else { ui.visuals().text_color() };
+    let text_color = if is_merge && !r.is_sel { weak_color } else { ui.visuals().text_color() };
 
-    // Cells.
     let Columns { order, fixed, visible: vis } = ctx.columns;
     let (lefts, ws) = col_layout(order, fixed, rect.width());
-    let cell = |k: usize| Rect::from_min_size(Pos2::new(rect.left() + lefts[k], rect.top()), Vec2::new(ws[k], row_h));
+    // The leftmost column is inset so its content clears the rounded selection background.
+    let cell = |k: usize| {
+        let inset = if order[0] == k { 8.0 } else { 0.0 };
+        Rect::from_min_size(Pos2::new(rect.left() + lefts[k] + inset, rect.top()), Vec2::new(ws[k] - inset, row_h))
+    };
 
     let sc = cell(0);
     let is_head = ctx.head_hash.as_deref() == Some(c.hash.as_str());
-    let graph_w = paint_graph(&painter, Rect::from_min_max(sc.min, rect.right_bottom()), cy, graph, is_head, is_merge, dark);
+    let graph_w = paint_graph(&painter, Rect::from_min_max(sc.min, rect.right_bottom()), cy, r.graph, is_head, is_merge, dark);
+    let subject_left = sc.left() + graph_w + 4.0;
     let subject_rect = Rect::from_min_max(
-        Pos2::new(sc.left() + graph_w + 4.0, rect.top()),
-        Pos2::new((sc.right() - 8.0).max(sc.left() + graph_w + 4.0), rect.bottom()),
+        Pos2::new(subject_left, rect.top()),
+        Pos2::new((sc.right() - 8.0).max(subject_left), rect.bottom()),
     );
     paint_subject_and_labels(
         &ui.painter_at(subject_rect), subject_rect.left() + 2.0, rect.top(), cy, &c.subject, text_color, !is_merge,
@@ -234,8 +249,11 @@ fn row(
     };
     text_cell(3, &c.hash[..c.hash.len().min(7)], FontId::monospace(12.5));
     text_cell(4, &format_time(c.commit_time), FontId::proportional(13.0));
+}
 
-    // Interaction.
+/// Click selection, hover tooltip and the context menu.
+fn handle_interaction(ui: &egui::Ui, ctx: &RowCtx, r: &RowData, resp: egui::Response, actions: &mut Vec<RowAction>) {
+    let (i, c) = (r.i, r.c);
     if resp.clicked() {
         let m = ui.input(|i| i.modifiers);
         actions.push(if m.shift {
@@ -245,19 +263,19 @@ fn row(
         } else {
             RowAction::Select(i)
         });
-    } else if resp.secondary_clicked() && !is_sel {
+    } else if resp.secondary_clicked() && !r.is_sel {
         // Right-click inside the selection keeps it, so the menu acts on all of it.
         actions.push(RowAction::Select(i));
     }
-    let resp = resp.on_hover_text_at_pointer(format!(
+    resp.on_hover_text_at_pointer(format!(
         "{}\n{} <{}>\n{}",
         c.short_hash(),
         c.author_name,
         c.author_email,
         crate::ui::format_full_time(c.author_time)
-    ));
-    resp.context_menu(|ui| {
-        if is_sel && ctx.sel_commits.len() > 1 {
+    ))
+    .context_menu(|ui| {
+        if r.is_sel && ctx.sel_commits.len() > 1 {
             multi_menu(ui, &ctx.sel_commits, ctx.current.as_deref(), ctx.repo_state, actions);
         } else {
             row_menu(ui, c, ctx.current.as_deref(), ctx.repo_state, actions);

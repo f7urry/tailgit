@@ -102,7 +102,7 @@ fn reorder_cells(ui: &egui::Ui, hrect: Rect, mut order: [usize; 5], fixed: [f32;
                 order = [new_order[0], new_order[1], new_order[2], new_order[3], new_order[4]];
             }
         }
-        let tx = x + if k == 0 { 6.0 } else { 0.0 };
+        let tx = x + if order[0] == k { 8.0 } else { 0.0 };
         ui.painter_at(Rect::from_min_max(Pos2::new(x, hrect.top()), Pos2::new(x + w[k] - 4.0, hrect.bottom())))
             .text(Pos2::new(tx, hrect.center().y), Align2::LEFT_CENTER, COL_NAMES[k], font.clone(), weak);
     }
