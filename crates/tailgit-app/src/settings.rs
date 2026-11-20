@@ -183,6 +183,11 @@ impl Settings {
         self.save();
     }
 
+    pub fn remove_recent(&mut self, root: &str) {
+        self.recent.retain(|r| r != root);
+        self.save();
+    }
+
     pub fn clear_recent(&mut self) {
         self.recent.clear();
         self.save();

@@ -140,7 +140,7 @@ pub(super) fn show(
                     *show_settings = true;
                 }
                 egui::Popup::menu(&open_r).show(|ui| {
-                    ui.set_min_width(260.0);
+                    ui.set_width(240.0);
                     if ui.button("\u{f07c}  Open Folder\u{2026}").clicked() {
                         *open_request = rfd::FileDialog::new().pick_folder();
                         ui.close();
@@ -149,19 +149,42 @@ pub(super) fn show(
                     if settings.recent.is_empty() {
                         ui.weak("No recent folders");
                     }
+                    let mut remove: Option<String> = None;
                     for r in settings.recent.iter().take(5) {
                         let name = std::path::Path::new(r)
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_else(|| r.clone());
-                        if ui.button(name).on_hover_text(r).clicked() {
-                            *open_request = Some(PathBuf::from(r));
-                            ui.close();
-                        }
+                        let row_h = ui.spacing().interact_size.y;
+                        let x_w = 24.0;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            let name_w = ui.available_width() - x_w - 2.0;
+                            let b = ui.add(
+                                egui::Button::new((name, egui::Atom::grow()))
+                                    .frame(false)
+                                    .min_size(egui::vec2(name_w, row_h))
+                                    .wrap_mode(egui::TextWrapMode::Truncate),
+                            );
+                            if b.on_hover_text(r).clicked() {
+                                *open_request = Some(PathBuf::from(r));
+                                ui.close();
+                            }
+                            if ui
+                                .add_sized([x_w, row_h], egui::Button::new("\u{f00d}").frame(false))
+                                .on_hover_text("Remove from recent")
+                                .clicked()
+                            {
+                                remove = Some(r.clone());
+                            }
+                        });
+                    }
+                    if let Some(r) = remove {
+                        settings.remove_recent(&r);
                     }
                     if !settings.recent.is_empty() {
                         ui.separator();
-                        if ui.button("Clear Recent Folders").clicked() {
+                        if ui.button("Clear All").clicked() {
                             settings.clear_recent();
                             ui.close();
                         }
