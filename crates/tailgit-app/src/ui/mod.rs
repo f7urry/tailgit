@@ -225,3 +225,38 @@ pub fn pane_toggle(ui: &mut egui::Ui, right: bool, shown: bool, tip: &str) -> eg
     p.vline(x, b.y_range(), stroke);
     resp.on_hover_text(tip)
 }
+
+/// Flat status-bar icon button sized like [`pane_toggle`].
+pub fn status_icon(ui: &mut egui::Ui, glyph: &str, tip: &str) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(30.0, 24.0), egui::Sense::click());
+    let v = ui.visuals();
+    let p = ui.painter();
+    if resp.hovered() {
+        p.rect_filled(r, 6.0, if v.dark_mode { Color32::from_white_alpha(16) } else { Color32::from_black_alpha(16) });
+    }
+    let fg = if resp.hovered() { v.strong_text_color() } else { v.weak_text_color() };
+    p.text(r.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(14.0), fg);
+    resp.on_hover_text(tip)
+}
+
+/// Open a terminal window at `path`.
+pub fn open_terminal(path: &str) {
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").args(["-a", "Terminal", path]).spawn();
+    #[cfg(target_os = "windows")]
+    let r = std::process::Command::new("cmd").args(["/C", "start", "cmd", "/K", "cd", "/d", path]).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("x-terminal-emulator").current_dir(path).spawn();
+    let _ = r;
+}
+
+/// Reveal `path` in the system file manager.
+pub fn open_file_manager(path: &str) {
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(target_os = "windows")]
+    let r = std::process::Command::new("explorer").arg(path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open").arg(path).spawn();
+    let _ = r;
+}

@@ -74,6 +74,12 @@ pub(super) fn status_bar(ui: &mut egui::Ui, view: &mut RepoView, dark: bool, sho
                 if ui::pane_toggle(ui, false, *show_sidebar, tip).clicked() {
                     *show_sidebar = !*show_sidebar;
                 }
+                if ui::status_icon(ui, "\u{f07c}", "Open in Finder").clicked() {
+                    ui::open_file_manager(&view.root);
+                }
+                if ui::status_icon(ui, "\u{f120}", "Open in Terminal").clicked() {
+                    ui::open_terminal(&view.root);
+                }
                 ui.add_space(6.0);
                 ui.add(egui::Label::new(RichText::new(&view.root).weak()).truncate());
             });

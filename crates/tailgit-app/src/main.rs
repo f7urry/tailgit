@@ -35,11 +35,8 @@ fn main() -> eframe::Result {
             .with_fullsize_content_view(true)
             .with_title_shown(false)
             .with_titlebar_shown(false),
-        // Fewer swapchain drawables: each one is a full-window retina IOSurface.
-        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-            surface: eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY,
-            ..Default::default()
-        },
+        // OpenGL keeps up with live window resizing on macOS; wgpu rebuilt the swapchain every frame and lagged.
+        renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
     eframe::run_native(
