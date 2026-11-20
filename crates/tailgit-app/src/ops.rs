@@ -1,6 +1,6 @@
 //! Write operations the UI can request. Each runs on a worker thread.
 
-use git_core::ops::{self, PullMode, PushOptions, ResetMode};
+use git_core::ops::{self, PullMode, PushOptions, ResetMode, TodoItem};
 use git_core::partial::{self, LineKey, PartialKind};
 use git_core::{conflicts, stash, Git, Result};
 
@@ -25,6 +25,11 @@ pub enum Op {
     Rebase { onto: String },
     DropCommits(Vec<String>),
     UndoDrop { old_head: String, new_head: String },
+    /// Reset HEAD to its parent; the commit's changes return to the Changes tab.
+    UndoCommit(String),
+    EditMessage { hash: String, message: String },
+    /// Rewrite `from` and every later commit following `items` (new order, oldest first).
+    InteractiveRebase { from: String, items: Vec<TodoItem> },
     RebaseContinue,
     RebaseSkip,
     RebaseAbort,
@@ -99,6 +104,9 @@ impl Op {
             Op::DropCommits(h) if h.len() == 1 => format!("Drop commit {}", short(&h[0])),
             Op::DropCommits(h) => format!("Drop {} commits", h.len()),
             Op::UndoDrop { .. } => "Undo drop".into(),
+            Op::UndoCommit(h) => format!("Undo commit {}", short(h)),
+            Op::EditMessage { hash, .. } => format!("Edit message of {}", short(hash)),
+            Op::InteractiveRebase { from, .. } => format!("Interactive rebase from {}", short(from)),
             Op::RebaseContinue => "Continue rebase".into(),
             Op::RebaseSkip => "Skip commit".into(),
             Op::RebaseAbort => "Abort rebase".into(),
@@ -165,6 +173,9 @@ impl Op {
             Op::Rebase { onto } => ops::rebase(git, &onto),
             Op::DropCommits(h) => ops::drop_commits(git, &h),
             Op::UndoDrop { old_head, new_head } => ops::undo_drop(git, &old_head, &new_head),
+            Op::UndoCommit(h) => ops::undo_commit(git, &h),
+            Op::EditMessage { hash, message } => ops::edit_commit_message(git, &hash, &message),
+            Op::InteractiveRebase { from, items } => ops::interactive_rebase(git, &from, &items),
             Op::RebaseContinue => ops::rebase_continue(git),
             Op::RebaseSkip => ops::rebase_skip(git),
             Op::RebaseAbort => ops::rebase_abort(git),

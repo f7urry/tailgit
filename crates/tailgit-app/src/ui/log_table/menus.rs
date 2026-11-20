@@ -8,7 +8,14 @@ use super::RowAction;
 use crate::ops::Op;
 use crate::ui::dialogs::{self, Dialog};
 
-pub(super) fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Option<&str>, repo_state: RepoState, actions: &mut Vec<RowAction>) {
+pub(super) fn row_menu(
+    ui: &mut egui::Ui,
+    c: &git_core::log::Commit,
+    is_head: bool,
+    current: Option<&str>,
+    repo_state: RepoState,
+    actions: &mut Vec<RowAction>,
+) {
     ui.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
     let short = c.short_hash().to_string();
     let mut act = |ui: &mut egui::Ui, label: &str, a: RowAction| {
@@ -68,6 +75,44 @@ pub(super) fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Op
             .expect("dialog"),
         ),
     );
+    ui.separator();
+    let rewrite_block = if current.is_none() {
+        Some("Not on a branch".to_string())
+    } else if c.parents.len() > 1 {
+        Some(format!("Selected commit has {} parents", c.parents.len()))
+    } else {
+        busy_reason(repo_state, "rewrite history")
+    };
+    let rewrite = |ui: &mut egui::Ui, label: &str, a: RowAction, out: &mut Option<RowAction>| {
+        let mut resp = ui.add_enabled(rewrite_block.is_none(), egui::Button::new(label));
+        if let Some(reason) = &rewrite_block {
+            resp = resp.on_disabled_hover_text(reason);
+        }
+        if resp.clicked() {
+            *out = Some(a);
+            ui.close();
+        }
+    };
+    let mut extra_action = None;
+    let undo_block = if !is_head {
+        Some("Only the current HEAD commit can be undone".to_string())
+    } else if c.parents.len() != 1 {
+        Some(format!("Selected commit has {} parents", c.parents.len()))
+    } else {
+        busy_reason(repo_state, "undo commit")
+    };
+    let mut undo_action = None;
+    let mut resp = ui.add_enabled(undo_block.is_none(), egui::Button::new("Undo Commit"));
+    if let Some(reason) = &undo_block {
+        resp = resp.on_disabled_hover_text(reason);
+    } else {
+        resp = resp.on_hover_text("Reset to the parent commit; its changes return to the Changes tab");
+    }
+    if resp.clicked() {
+        undo_action = Some(RowAction::Op(Op::UndoCommit(c.hash.clone())));
+        ui.close();
+    }
+    rewrite(ui, "Edit Commit Message…", RowAction::EditMessage(c.hash.clone()), &mut extra_action);
     let drop_block = if c.parents.len() != 1 {
         Some(format!("Selected commit has {} parents", c.parents.len()))
     } else {
@@ -92,7 +137,18 @@ pub(super) fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Op
         }));
         ui.close();
     }
+    rewrite(ui, "Interactively Rebase from Here…", RowAction::InteractiveRebase(c.hash.clone()), &mut extra_action);
+    ui.separator();
+    let mut resp = ui.add_enabled(current.is_some(), egui::Button::new("Push up to Here…"));
+    if current.is_none() {
+        resp = resp.on_disabled_hover_text("Not on a branch");
+    }
+    if resp.clicked() {
+        extra_action = Some(RowAction::PushUpTo(c.hash.clone()));
+        ui.close();
+    }
     if let Some(cur) = current {
+        ui.separator();
         act(
             ui,
             &format!("Reset Current Branch ('{cur}') to Here…"),
@@ -124,6 +180,12 @@ pub(super) fn row_menu(ui: &mut egui::Ui, c: &git_core::log::Commit, current: Op
                 squash: false,
             }),
         );
+    }
+    if let Some(a) = extra_action {
+        actions.push(a);
+    }
+    if let Some(a) = undo_action {
+        actions.push(a);
     }
     if let Some(a) = drop_action {
         actions.push(a);

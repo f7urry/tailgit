@@ -52,14 +52,22 @@ pub fn texture(ctx: &egui::Context) -> egui::TextureHandle {
     t
 }
 
-/// Writes a macOS-grid app icon: 1024px transparent canvas with the
-/// squircle at 824px, centered (Apple's icon template proportions).
-pub fn export_png(path: &std::path::Path) -> anyhow::Result<()> {
+/// macOS-grid app icon: 1024px transparent canvas with the squircle at
+/// 824px, centered (Apple's icon template proportions).
+pub fn app_icon() -> egui::IconData {
     let (n, rgba) = icon_rgba();
     let src = image::RgbaImage::from_raw(*n, *n, rgba.clone()).expect("icon buffer");
     let body = image::imageops::resize(&src, 824, 824, image::imageops::FilterType::Lanczos3);
     let mut canvas = image::RgbaImage::new(1024, 1024);
     image::imageops::overlay(&mut canvas, &body, 100, 92);
-    canvas.save(path)?;
+    egui::IconData { rgba: canvas.into_raw(), width: 1024, height: 1024 }
+}
+
+/// Writes the macOS-grid app icon as a PNG.
+pub fn export_png(path: &std::path::Path) -> anyhow::Result<()> {
+    let icon = app_icon();
+    image::RgbaImage::from_raw(icon.width, icon.height, icon.rgba)
+        .expect("icon buffer")
+        .save(path)?;
     Ok(())
 }

@@ -667,6 +667,15 @@ impl RepoView {
                             }
                         }
                         Op::UndoDrop { .. } => self.notify(true, "Drop undone".into()),
+                        Op::UndoCommit(ref h) => {
+                            // Put the undone commit's message back in the commit box.
+                            if self.commit_message.trim().is_empty() {
+                                if let Ok(m) = self.jobs.git.read(&["log", "-1", "--format=%B", h]) {
+                                    self.commit_message = m.trim().to_string();
+                                }
+                            }
+                            self.amend = false;
+                        }
                         Op::Commit { push_after, .. } => {
                             self.commit_message.clear();
                             self.amend = false;

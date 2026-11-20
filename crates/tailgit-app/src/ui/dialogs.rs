@@ -3,7 +3,7 @@
 use eframe::egui::{self, RichText};
 use git_core::content::Source;
 use git_core::log::{ChangeKind, FileChange};
-use git_core::ops::{PushOptions, ResetMode};
+use git_core::ops::{PushOptions, RebaseCommit, ResetMode, TodoAction, TodoItem};
 
 use crate::ops::Op;
 use crate::jobs::DiffRequest;
@@ -44,6 +44,17 @@ pub enum Dialog {
         tags: bool,
         ahead: u32,
         has_upstream: bool,
+        /// Push only up to this commit ("Push up to Here").
+        revision: Option<String>,
+    },
+    EditMessage {
+        hash: String,
+        label: String,
+        message: String,
+    },
+    InteractiveRebase {
+        from: String,
+        rows: Vec<RebaseRow>,
     },
     Stash {
         message: String,
@@ -74,6 +85,65 @@ pub enum Dialog {
         rev: String,
         files: Option<Result<Vec<FileChange>, String>>,
     },
+}
+
+/// One row of the interactive rebase dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    Pick,
+    Reword,
+    Squash,
+    Fixup,
+    Drop,
+}
+
+impl RowKind {
+    const ALL: [RowKind; 5] = [RowKind::Pick, RowKind::Reword, RowKind::Squash, RowKind::Fixup, RowKind::Drop];
+    fn label(self) -> &'static str {
+        match self {
+            RowKind::Pick => "Pick",
+            RowKind::Reword => "Reword",
+            RowKind::Squash => "Squash",
+            RowKind::Fixup => "Fixup",
+            RowKind::Drop => "Drop",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RebaseRow {
+    pub commit: RebaseCommit,
+    pub kind: RowKind,
+    /// Edited message, used when `kind` is Reword.
+    pub message: String,
+}
+
+/// Interactive rebase dialog for `from` and the commits after it (`list` oldest first).
+pub fn rebase_dialog(from: &str, list: Vec<RebaseCommit>) -> Dialog {
+    Dialog::InteractiveRebase {
+        from: from.to_string(),
+        rows: list
+            .into_iter()
+            .map(|c| RebaseRow { message: c.message.clone(), commit: c, kind: RowKind::Pick })
+            .collect(),
+    }
+}
+
+/// Why the rebase plan is invalid, if it is.
+fn rebase_problem(rows: &[RebaseRow]) -> Option<&'static str> {
+    let mut kept = false;
+    for r in rows {
+        match r.kind {
+            RowKind::Squash | RowKind::Fixup if !kept => return Some("Squash/Fixup needs a kept commit above it in the list"),
+            RowKind::Reword if r.message.trim().is_empty() => return Some("Commit message cannot be empty"),
+            RowKind::Drop => {}
+            _ => kept = true,
+        }
+    }
+    if !kept {
+        return Some("Keep at least one commit, or use Drop Commit instead");
+    }
+    None
 }
 
 pub fn confirm(title: &str, text: impl Into<String>, op: Op, danger: bool) -> Option<Dialog> {
@@ -133,6 +203,7 @@ pub fn push_dialog_for(name: &str, upstream: Option<&str>, ahead: u32, remotes: 
         tags: false,
         ahead,
         has_upstream: upstream.is_some(),
+        revision: None,
     })
 }
 
@@ -167,6 +238,11 @@ pub fn show(ctx: &egui::Context, view: &mut RepoView) {
 }
 
 fn buttons(ui: &mut egui::Ui, ok: &str, enabled: bool, danger: bool) -> Option<bool> {
+    buttons_ex(ui, ok, enabled, danger, !danger)
+}
+
+/// Like [`buttons`]; `enter_accepts` is off for dialogs with a multi-line text field.
+fn buttons_ex(ui: &mut egui::Ui, ok: &str, enabled: bool, danger: bool, enter_accepts: bool) -> Option<bool> {
     let mut res = None;
     ui.add_space(12.0);
     ui.horizontal(|ui| {
@@ -176,7 +252,7 @@ fn buttons(ui: &mut egui::Ui, ok: &str, enabled: bool, danger: bool) -> Option<b
             text = text.color(crate::theme::sys::red(ui.visuals().dark_mode));
         }
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if ui.add_enabled(enabled, egui::Button::new(text)).clicked() || (enabled && enter && !danger) {
+        if ui.add_enabled(enabled, egui::Button::new(text)).clicked() || (enabled && enter && enter_accepts) {
             res = Some(true);
         }
         if ui.button("Cancel").clicked() {
@@ -278,9 +354,12 @@ fn body(ui: &mut egui::Ui, dialog: &mut Dialog) -> Outcome {
             tags,
             ahead,
             has_upstream,
+            revision,
         } => {
             ui.heading("Push Commits");
-            if *has_upstream {
+            if let Some(rev) = revision {
+                ui.label(format!("{ahead} commit(s) to push from {local}, up to {}", &rev[..rev.len().min(8)]));
+            } else if *has_upstream {
                 ui.label(format!("{ahead} commit(s) to push from {local}"));
             } else {
                 ui.label(format!("{local} has no upstream yet"));
@@ -299,7 +378,9 @@ fn body(ui: &mut egui::Ui, dialog: &mut Dialog) -> Outcome {
                 ui.text_edit_singleline(remote_branch);
                 ui.end_row();
             });
-            ui.checkbox(set_upstream, "Set upstream (track remote branch)");
+            if revision.is_none() {
+                ui.checkbox(set_upstream, "Set upstream (track remote branch)");
+            }
             ui.checkbox(tags, "Push tags (--follow-tags)");
             ui.checkbox(force, "Force push (--force-with-lease)");
             let r = buttons(
@@ -316,6 +397,7 @@ fn body(ui: &mut egui::Ui, dialog: &mut Dialog) -> Outcome {
                 force_with_lease: *force,
                 tags: *tags,
                 no_verify: false,
+                revision: revision.clone(),
             };
             close_or(r, &|| Op::Push(opts.clone()))
         }
@@ -345,6 +427,82 @@ fn body(ui: &mut egui::Ui, dialog: &mut Dialog) -> Outcome {
                 name: n.clone(),
                 selector: s.clone(),
             })
+        }
+        Dialog::EditMessage { hash, label, message } => {
+            ui.heading("Edit Commit Message");
+            ui.label(label.as_str());
+            ui.add(egui::TextEdit::multiline(message).desired_width(f32::INFINITY).desired_rows(8).font(egui::TextStyle::Monospace));
+            ui.label(RichText::new("Changing an older commit rewrites history; later commits get new hashes.").weak());
+            let r = buttons_ex(ui, "OK", !message.trim().is_empty(), false, false);
+            let (h, m) = (hash.clone(), message.clone());
+            close_or(r, &|| Op::EditMessage { hash: h.clone(), message: m.clone() })
+        }
+        Dialog::InteractiveRebase { from, rows } => {
+            ui.set_min_width(560.0);
+            ui.heading("Interactive Rebase");
+            ui.label(format!("{} commit(s), oldest first. Reorder with ▲▼.", rows.len()));
+            let mut swap: Option<(usize, usize)> = None;
+            egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                let n = rows.len();
+                for (i, row) in rows.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(i > 0, egui::Button::new("▲").small()).clicked() {
+                            swap = Some((i, i - 1));
+                        }
+                        if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).clicked() {
+                            swap = Some((i, i + 1));
+                        }
+                        egui::ComboBox::from_id_salt(("rebase_kind", &row.commit.hash))
+                            .width(80.0)
+                            .selected_text(row.kind.label())
+                            .show_ui(ui, |ui| {
+                                for k in RowKind::ALL {
+                                    ui.selectable_value(&mut row.kind, k, k.label());
+                                }
+                            });
+                        ui.monospace(&row.commit.hash[..row.commit.hash.len().min(8)]);
+                        let mut subj = RichText::new(&row.commit.subject);
+                        if row.kind == RowKind::Drop {
+                            subj = subj.strikethrough().weak();
+                        }
+                        ui.label(subj);
+                    });
+                    if row.kind == RowKind::Reword {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut row.message)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(3)
+                                .font(egui::TextStyle::Monospace),
+                        );
+                    }
+                }
+            });
+            if let Some((a, b)) = swap {
+                rows.swap(a, b);
+            }
+            let problem = rebase_problem(rows);
+            if let Some(p) = problem {
+                ui.label(RichText::new(p).color(crate::theme::sys::red(ui.visuals().dark_mode)));
+            } else {
+                ui.label(RichText::new("This rewrites history; rewritten commits get new hashes.").weak());
+            }
+            let r = buttons_ex(ui, "Start Rebasing", problem.is_none(), false, false);
+            let from = from.clone();
+            let items: Vec<TodoItem> = rows
+                .iter()
+                .map(|r| TodoItem {
+                    hash: r.commit.hash.clone(),
+                    action: match r.kind {
+                        RowKind::Pick => TodoAction::Pick,
+                        RowKind::Reword if r.message == r.commit.message => TodoAction::Pick,
+                        RowKind::Reword => TodoAction::Reword(r.message.clone()),
+                        RowKind::Squash => TodoAction::Squash,
+                        RowKind::Fixup => TodoAction::Fixup,
+                        RowKind::Drop => TodoAction::Drop,
+                    },
+                })
+                .collect();
+            close_or(r, &|| Op::InteractiveRebase { from: from.clone(), items: items.clone() })
         }
         Dialog::Reset { target, label, mode } => {
             ui.heading("Reset Current Branch");

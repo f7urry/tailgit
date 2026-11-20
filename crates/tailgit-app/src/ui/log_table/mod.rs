@@ -40,4 +40,10 @@ enum RowAction {
     Op(Op),
     Dialog(Dialog),
     Copy(String),
+    /// Open the Edit Commit Message dialog for this commit.
+    EditMessage(String),
+    /// Open the interactive rebase dialog starting at this commit.
+    InteractiveRebase(String),
+    /// Open the push dialog limited to commits up to this one.
+    PushUpTo(String),
 }

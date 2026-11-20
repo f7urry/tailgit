@@ -8,6 +8,7 @@ use log_graph::RowPrint;
 use super::columns::{col_layout, label_prefs};
 use super::header::{header, Columns};
 use super::menus::{multi_menu, row_menu};
+use crate::ui::dialogs::{self, Dialog};
 use super::paint::{paint_graph, paint_pills, paint_subject_and_labels};
 use super::{RowAction, LABEL_LINE_H, ROW_H};
 use crate::repo::RepoView;
@@ -104,6 +105,37 @@ pub fn table(ui: &mut egui::Ui, view: &mut RepoView) {
             RowAction::Op(op) => view.run(op),
             RowAction::Dialog(d) => view.dialog = Some(d),
             RowAction::Copy(s) => ui.ctx().copy_text(s),
+            RowAction::EditMessage(hash) => {
+                match git_core::ops::rebase_commits(&view.jobs.git, &hash) {
+                    Ok(list) => {
+                        let message = list.into_iter().find(|c| c.hash == hash).map(|c| c.message).unwrap_or_default();
+                        view.dialog = Some(Dialog::EditMessage {
+                            label: format!("{} {}", &hash[..hash.len().min(8)], message.lines().next().unwrap_or("")),
+                            hash,
+                            message,
+                        });
+                    }
+                    Err(e) => view.notify(false, format!("Edit commit message: {e}")),
+                }
+            }
+            RowAction::InteractiveRebase(hash) => match git_core::ops::rebase_commits(&view.jobs.git, &hash) {
+                Ok(list) => view.dialog = Some(dialogs::rebase_dialog(&hash, list)),
+                Err(e) => view.notify(false, format!("Interactive rebase: {e}")),
+            },
+            RowAction::PushUpTo(hash) => match dialogs::push_dialog(view) {
+                Some(Dialog::Push { remote, remotes, local, remote_branch, force, tags, has_upstream, .. }) => {
+                    let ahead = view.jobs.git
+                        .read(&["rev-list", "--count", &format!("{remote}/{remote_branch}..{hash}")])
+                        .ok()
+                        .and_then(|s| s.trim().parse().ok())
+                        .unwrap_or(0);
+                    let revision = Some(hash);
+                    view.dialog = Some(Dialog::Push {
+                        revision, remote, remotes, local, remote_branch, set_upstream: false, force, tags, ahead, has_upstream,
+                    });
+                }
+                _ => view.notify(false, "Push: no remote configured".into()),
+            },
         }
     }
 }
@@ -278,7 +310,7 @@ fn handle_interaction(ui: &egui::Ui, ctx: &RowCtx, r: &RowData, resp: egui::Resp
         if r.is_sel && ctx.sel_commits.len() > 1 {
             multi_menu(ui, &ctx.sel_commits, ctx.current.as_deref(), ctx.repo_state, actions);
         } else {
-            row_menu(ui, c, ctx.current.as_deref(), ctx.repo_state, actions);
+            row_menu(ui, c, ctx.head_hash.as_deref() == Some(c.hash.as_str()), ctx.current.as_deref(), ctx.repo_state, actions);
         }
     });
 }

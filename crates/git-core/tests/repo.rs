@@ -410,3 +410,71 @@ fn drop_commits_validates_all_before_rewriting() {
     assert!(ops::drop_commits(&git, &[b, root]).is_err());
     assert_eq!(subjects(&git), ["B", "A"]);
 }
+
+#[test]
+fn undo_commit_returns_changes_to_worktree() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a\n", "A");
+    commit_file(&git, "b.txt", "b\n", "B");
+    let a = ops::rev_parse(&git, "HEAD~1").unwrap();
+    assert!(ops::undo_commit(&git, &a).is_err(), "only HEAD can be undone");
+    let b = ops::rev_parse(&git, "HEAD").unwrap();
+    ops::undo_commit(&git, &b).unwrap();
+    assert_eq!(subjects(&git), ["A"]);
+    assert!(git.root().join("b.txt").exists());
+}
+
+#[test]
+fn edit_commit_message_on_head_and_older_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a\n", "A");
+    commit_file(&git, "b.txt", "b\n", "B");
+    commit_file(&git, "c.txt", "c\n", "C");
+    write(&git, "dirty.txt", "x\n");
+    ops::stage(&git, &["dirty.txt".to_string()]).unwrap();
+    let head = ops::rev_parse(&git, "HEAD").unwrap();
+    ops::edit_commit_message(&git, &head, "C2\n\nbody").unwrap();
+    assert_eq!(subjects(&git), ["C2", "B", "A"]);
+    assert!(git.read(&["diff", "--cached", "--name-only"]).unwrap().contains("dirty.txt"), "staged change kept");
+
+    let b = ops::rev_parse(&git, "HEAD~1").unwrap();
+    ops::edit_commit_message(&git, &b, "B it's 'quoted'").unwrap();
+    assert_eq!(subjects(&git), ["C2", "B it's 'quoted'", "A"]);
+    assert!(git.root().join("dirty.txt").exists());
+    let root = ops::rev_parse(&git, "HEAD~2").unwrap();
+    ops::edit_commit_message(&git, &root, "root").unwrap();
+    assert_eq!(subjects(&git), ["C2", "B it's 'quoted'", "root"]);
+}
+
+#[test]
+fn interactive_rebase_reorders_squashes_and_drops() {
+    use ops::{TodoAction, TodoItem};
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a\n", "A");
+    commit_file(&git, "b.txt", "b\n", "B");
+    commit_file(&git, "c.txt", "c\n", "C");
+    commit_file(&git, "d.txt", "d\n", "D");
+    let b = ops::rev_parse(&git, "HEAD~2").unwrap();
+    let list = ops::rebase_commits(&git, &b).unwrap();
+    assert_eq!(list.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["B", "C", "D"]);
+    let item = |i: usize, action| TodoItem { hash: list[i].hash.clone(), action };
+    // D first, then B with C fixed up into it and reworded.
+    ops::interactive_rebase(
+        &git,
+        &b,
+        &[item(2, TodoAction::Pick), item(0, TodoAction::Reword("B+C".into())), item(1, TodoAction::Fixup)],
+    )
+    .unwrap();
+    assert_eq!(subjects(&git), ["B+C", "D", "A"]);
+    assert!(git.root().join("c.txt").exists());
+
+    let top = ops::rev_parse(&git, "HEAD").unwrap();
+    ops::interactive_rebase(&git, &top.clone(), &[TodoItem { hash: top, action: TodoAction::Drop }]).unwrap();
+    assert_eq!(subjects(&git), ["D", "A"]);
+    // A stale or partial list is refused.
+    let d = ops::rev_parse(&git, "HEAD~1").unwrap();
+    assert!(ops::interactive_rebase(&git, &d.clone(), &[TodoItem { hash: d, action: TodoAction::Pick }]).is_err());
+}

@@ -96,6 +96,27 @@ pub fn show(ui: &mut egui::Ui, view: &mut RepoView) {
             {
                 actions.push(Action::Op(Op::Unstage(staged_paths)));
             }
+            // Target: the clicked file if any, otherwise every checked (staged) file.
+            let clicked: Option<StatusEntry> = selection
+                .as_ref()
+                .and_then(|(_, path)| view.status.iter().find(|e| &e.path == path).cloned());
+            let targets: Vec<StatusEntry> = match clicked {
+                Some(e) => vec![e],
+                None => staged.clone(),
+            };
+            let hover = match targets.as_slice() {
+                [] => "Nothing to roll back".to_string(),
+                [e] if e.is_untracked() => format!("Delete untracked '{}' from disk", e.path),
+                [e] => format!("Discard all changes to '{}' and restore from HEAD", e.path),
+                many => format!("Discard all changes to {} checked files and restore from HEAD", many.len()),
+            };
+            if ui
+                .add_enabled(!busy && !targets.is_empty(), egui::Button::new("Rollback"))
+                .on_hover_text(hover)
+                .clicked()
+            {
+                actions.push(Action::Dialog(rollback_dialog(&targets)));
+            }
             if ui.button("\u{f2f1}").on_hover_text("Refresh").clicked() {
                 view.jobs.load_status();
             }
@@ -207,33 +228,40 @@ fn entry_menu(ui: &mut egui::Ui, e: &StatusEntry, staged: bool, actions: &mut Ve
         ui.close();
     }
     ui.separator();
-    if e.is_untracked() {
-        if ui.button("Delete File…").clicked() {
-            actions.push(Action::Dialog(
-                dialogs::confirm(
-                    "Delete File",
-                    format!("Delete untracked '{}' from disk? It cannot be recovered with git.", e.path),
-                    Op::DeleteUntracked(paths),
-                    true,
-                )
-                .expect("dialog"),
-            ));
-            ui.close();
-        }
-    } else if ui.button("Rollback…").clicked() {
-        actions.push(Action::Dialog(
-            dialogs::confirm(
-                "Rollback Changes",
-                format!("Discard all changes to '{}' (staged and unstaged) and restore it from HEAD?", e.path),
-                Op::Rollback(paths),
-                true,
-            )
-            .expect("dialog"),
-        ));
+    let label = if e.is_untracked() { "Delete File…" } else { "Rollback…" };
+    if ui.button(label).clicked() {
+        actions.push(Action::Dialog(rollback_dialog(std::slice::from_ref(e))));
         ui.close();
     }
     if ui.button("Copy Path").clicked() {
         ui.ctx().copy_text(e.path.clone());
         ui.close();
     }
+}
+
+/// Confirmation dialog for discarding files: deletes untracked files, rolls back tracked ones.
+fn rollback_dialog(entries: &[StatusEntry]) -> Dialog {
+    let paths: Vec<String> = entries.iter().map(|e| e.path.clone()).collect();
+    if let [e] = entries {
+        if e.is_untracked() {
+            return dialogs::confirm(
+                "Delete File",
+                format!("Delete untracked '{}' from disk? It cannot be recovered with git.", e.path),
+                Op::DeleteUntracked(paths),
+                true,
+            )
+            .expect("dialog");
+        }
+    }
+    let what = match entries {
+        [e] => format!("'{}'", e.path),
+        _ => format!("{} files", entries.len()),
+    };
+    dialogs::confirm(
+        "Rollback Changes",
+        format!("Discard all changes to {what} (staged and unstaged) and restore from HEAD?"),
+        Op::Rollback(paths),
+        true,
+    )
+    .expect("dialog")
 }

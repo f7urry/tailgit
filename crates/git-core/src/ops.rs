@@ -239,6 +239,193 @@ pub fn undo_drop(git: &Git, old_head: &str, new_head: &str) -> Result<String> {
     git.write(&["reset", "--keep", old_head])
 }
 
+/// Undo the last commit: mixed-reset HEAD to its parent so the changes return as local changes.
+/// Refuses unless `hash` is still HEAD.
+pub fn undo_commit(git: &Git, hash: &str) -> Result<String> {
+    let head = rev_parse(git, "HEAD")?;
+    if head != hash {
+        return Err(GitError::Invalid("Only the current HEAD commit can be undone".into()));
+    }
+    let parent = format!("{hash}^");
+    reset(git, &parent, ResetMode::Mixed)
+}
+
+// ---- interactive rebase ----------------------------------------------------
+
+/// What to do with one commit in an interactive rebase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TodoAction {
+    Pick,
+    /// Keep the commit with a new message.
+    Reword(String),
+    /// Meld into the previous commit, keeping both messages.
+    Squash,
+    /// Meld into the previous commit, discarding this message.
+    Fixup,
+    Drop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoItem {
+    pub hash: String,
+    pub action: TodoAction,
+}
+
+/// A commit that an interactive rebase from `hash` would rewrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebaseCommit {
+    pub hash: String,
+    pub subject: String,
+    pub message: String,
+}
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn ensure_normal_state(git: &Git, what: &str) -> Result<()> {
+    use crate::repo_state::{read_state, RepoState};
+    let op = match read_state(git) {
+        RepoState::Normal => return Ok(()),
+        RepoState::Rebasing => "rebase",
+        RepoState::Merging => "merge",
+        RepoState::CherryPicking => "cherry-pick",
+        _ => "revert",
+    };
+    Err(GitError::Invalid(format!("Cannot {what} during {op}")))
+}
+
+/// Base argument for rebasing `hash` and everything after it: its parent, or `--root`.
+fn rebase_base(git: &Git, hash: &str) -> Result<Option<String>> {
+    let parents = git.read(&["rev-list", "--parents", "-n", "1", hash])?;
+    let parts: Vec<&str> = parents.split_whitespace().collect();
+    match parts.len() {
+        1 => Ok(None),
+        2 => Ok(Some(parts[1].to_string())),
+        n => Err(GitError::Invalid(format!("Commit has {} parents; merge commits cannot be rewritten", n - 1))),
+    }
+}
+
+/// Commits from `hash` (inclusive) up to HEAD, oldest first. Fails if `hash` is not
+/// in the current branch or the range contains a merge commit.
+pub fn rebase_commits(git: &Git, hash: &str) -> Result<Vec<RebaseCommit>> {
+    let reachable = git.exec(&["merge-base", "--is-ancestor", hash, "HEAD"], None, crate::runner::Access::Read)?;
+    if !reachable.success() {
+        return Err(GitError::Invalid("The commit is not in the current branch".into()));
+    }
+    let base = rebase_base(git, hash)?;
+    let range = match &base {
+        Some(b) => format!("{b}..HEAD"),
+        None => "HEAD".to_string(),
+    };
+    let merges = git.read(&["rev-list", "--merges", &range])?;
+    if !merges.trim().is_empty() {
+        return Err(GitError::Invalid("The range contains merge commits; they cannot be rewritten".into()));
+    }
+    let out = git.read(&["log", "--reverse", "--format=%H%x00%B%x01", &range])?;
+    Ok(out
+        .split('\u{1}')
+        .filter_map(|rec| {
+            let rec = rec.trim_start_matches('\n');
+            let (h, msg) = rec.split_once('\0')?;
+            let message = msg.trim_end().to_string();
+            Some(RebaseCommit {
+                hash: h.to_string(),
+                subject: message.lines().next().unwrap_or("").to_string(),
+                message,
+            })
+        })
+        .collect())
+}
+
+/// Runs `git rebase -i` over `from` and every later commit, with a prepared todo list
+/// (`items` in the new order, oldest first; it must hold exactly those commits). Rewords run as `exec git commit --amend` steps,
+/// so no editor is needed. Uncommitted changes are autostashed.
+pub fn interactive_rebase(git: &Git, from: &str, items: &[TodoItem]) -> Result<String> {
+    ensure_normal_state(git, "rebase")?;
+    let first = items.first().ok_or_else(|| GitError::Invalid("Nothing to rebase".into()))?;
+    if matches!(first.action, TodoAction::Squash | TodoAction::Fixup) {
+        return Err(GitError::Invalid("The first commit cannot be squashed or fixed up".into()));
+    }
+    // Every item must belong to the range being rewritten.
+    let expected = rebase_commits(git, from)?;
+    let mut want: Vec<&str> = expected.iter().map(|c| c.hash.as_str()).collect();
+    let mut got: Vec<&str> = items.iter().map(|i| i.hash.as_str()).collect();
+    want.sort_unstable();
+    got.sort_unstable();
+    if want != got {
+        return Err(GitError::Invalid("The branch changed; reopen the rebase dialog".into()));
+    }
+    let base = rebase_base(git, from)?;
+
+    let dir = git.git_dir().join("tailgit-rebase");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(GitError::Spawn)?;
+    let mut todo = String::new();
+    let mut prev_kept = false;
+    for (i, it) in items.iter().enumerate() {
+        let h = &it.hash;
+        match &it.action {
+            TodoAction::Pick => todo.push_str(&format!("pick {h}\n")),
+            TodoAction::Drop => todo.push_str(&format!("drop {h}\n")),
+            TodoAction::Squash | TodoAction::Fixup if !prev_kept => {
+                return Err(GitError::Invalid("A squash or fixup needs a kept commit before it".into()));
+            }
+            TodoAction::Squash => todo.push_str(&format!("squash {h}\n")),
+            TodoAction::Fixup => todo.push_str(&format!("fixup {h}\n")),
+            TodoAction::Reword(msg) => {
+                if msg.trim().is_empty() {
+                    return Err(GitError::Invalid("Commit message cannot be empty".into()));
+                }
+                let f = dir.join(format!("msg-{i}"));
+                std::fs::write(&f, msg).map_err(GitError::Spawn)?;
+                todo.push_str(&format!("pick {h}\n"));
+                todo.push_str(&format!(
+                    "exec git commit --amend --only --allow-empty --no-verify --cleanup=strip -F {}\n",
+                    sh_quote(&f.to_string_lossy())
+                ));
+            }
+        }
+        if !matches!(it.action, TodoAction::Drop) {
+            prev_kept = true;
+        }
+    }
+    let todo_file = dir.join("todo");
+    std::fs::write(&todo_file, todo).map_err(GitError::Spawn)?;
+    let editor = format!("sequence.editor=cp {}", sh_quote(&todo_file.to_string_lossy()));
+    let mut args = REBASE_CFG.to_vec();
+    args.extend(["-c", editor.as_str(), "rebase", "-i", "--autostash"]);
+    match &base {
+        Some(b) => args.push(b),
+        None => args.push("--root"),
+    }
+    git.write(&args)
+}
+
+/// Changes the message of `hash`. HEAD is amended directly (staged changes are left
+/// alone); an older commit is reworded through an interactive rebase.
+pub fn edit_commit_message(git: &Git, hash: &str, message: &str) -> Result<String> {
+    ensure_normal_state(git, "edit commit message")?;
+    if message.trim().is_empty() {
+        return Err(GitError::Invalid("Commit message cannot be empty".into()));
+    }
+    let head = rev_parse(git, "HEAD")?;
+    if head == hash {
+        return git.write_stdin(
+            &["commit", "--amend", "--only", "--allow-empty", "--no-verify", "--cleanup=strip", "-F", "-"],
+            message.as_bytes(),
+        );
+    }
+    let items: Vec<TodoItem> = rebase_commits(git, hash)?
+        .into_iter()
+        .map(|c| TodoItem {
+            action: if c.hash == hash { TodoAction::Reword(message.to_string()) } else { TodoAction::Pick },
+            hash: c.hash,
+        })
+        .collect();
+    interactive_rebase(git, hash, &items)
+}
+
 pub fn rebase_continue(git: &Git) -> Result<String> {
     let mut args = REBASE_CFG.to_vec();
     args.extend(["rebase", "--continue"]);
@@ -420,12 +607,18 @@ pub struct PushOptions {
     pub force_with_lease: bool,
     pub tags: bool,
     pub no_verify: bool,
+    /// Push only up to this commit instead of the branch tip.
+    pub revision: Option<String>,
 }
 
 pub fn push(git: &Git, opts: &PushOptions, progress: impl FnMut(&str)) -> Result<String> {
-    let spec = format!("refs/heads/{}:refs/heads/{}", opts.local_branch, opts.remote_branch);
+    let src = match &opts.revision {
+        Some(rev) => rev.clone(),
+        None => format!("refs/heads/{}", opts.local_branch),
+    };
+    let spec = format!("{src}:refs/heads/{}", opts.remote_branch);
     let mut args = vec!["push", "--progress", "--porcelain"];
-    if opts.set_upstream {
+    if opts.set_upstream && opts.revision.is_none() {
         args.push("--set-upstream");
     }
     if opts.force_with_lease {
