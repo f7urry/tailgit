@@ -402,6 +402,49 @@ pub fn interactive_rebase(git: &Git, from: &str, items: &[TodoItem]) -> Result<S
     git.write(&args)
 }
 
+/// Squashes the selected commits into one, placed where the oldest of them is.
+/// Other commits in between keep their order after it. The resulting commit gets
+/// `message`, or every selected message (oldest first) joined when `None`.
+pub fn squash_commits(git: &Git, hashes: &[String], message: Option<&str>) -> Result<String> {
+    ensure_normal_state(git, "squash commits")?;
+    if hashes.len() < 2 {
+        return Err(GitError::Invalid("Select at least two commits to squash".into()));
+    }
+    let mut full = Vec::with_capacity(hashes.len());
+    for h in hashes {
+        let r = rev_parse(git, h)?;
+        let reachable = git.exec(&["merge-base", "--is-ancestor", &r, "HEAD"], None, crate::runner::Access::Read)?;
+        if !reachable.success() {
+            return Err(GitError::Invalid(format!("Commit {} is not in the current branch", &h[..h.len().min(7)])));
+        }
+        full.push(r);
+    }
+    // Oldest selected commit is the one with the most commits after it.
+    let mut oldest = full[0].clone();
+    let mut best = 0usize;
+    for h in &full {
+        let d: usize = git.read(&["rev-list", "--count", &format!("{h}..HEAD")])?.trim().parse().unwrap_or(0);
+        if d >= best {
+            best = d;
+            oldest = h.clone();
+        }
+    }
+    let range = rebase_commits(git, &oldest)?;
+    let selected: Vec<&RebaseCommit> = range.iter().filter(|c| full.contains(&c.hash)).collect();
+    let msg = match message {
+        Some(m) => m.to_string(),
+        None => selected.iter().map(|c| c.message.as_str()).collect::<Vec<_>>().join("\n\n"),
+    };
+    let mut items = vec![TodoItem { hash: selected[0].hash.clone(), action: TodoAction::Reword(msg) }];
+    for c in &selected[1..] {
+        items.push(TodoItem { hash: c.hash.clone(), action: TodoAction::Fixup });
+    }
+    for c in range.iter().filter(|c| !full.contains(&c.hash)) {
+        items.push(TodoItem { hash: c.hash.clone(), action: TodoAction::Pick });
+    }
+    interactive_rebase(git, &oldest, &items)
+}
+
 /// Changes the message of `hash`. HEAD is amended directly (staged changes are left
 /// alone); an older commit is reworded through an interactive rebase.
 pub fn edit_commit_message(git: &Git, hash: &str, message: &str) -> Result<String> {

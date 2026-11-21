@@ -478,3 +478,20 @@ fn interactive_rebase_reorders_squashes_and_drops() {
     let d = ops::rev_parse(&git, "HEAD~1").unwrap();
     assert!(ops::interactive_rebase(&git, &d.clone(), &[TodoItem { hash: d, action: TodoAction::Pick }]).is_err());
 }
+
+#[test]
+fn squash_commits_combines_non_adjacent_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a\n", "A");
+    commit_file(&git, "b.txt", "b\n", "B");
+    commit_file(&git, "c.txt", "c\n", "C");
+    commit_file(&git, "d.txt", "d\n", "D");
+    let b = ops::rev_parse(&git, "HEAD~2").unwrap();
+    let d = ops::rev_parse(&git, "HEAD").unwrap();
+    ops::squash_commits(&git, &[d, b], None).unwrap();
+    assert_eq!(subjects(&git), ["C", "B", "A"]);
+    let msg = git.read(&["log", "-1", "--format=%B", "HEAD~1"]).unwrap();
+    assert!(msg.contains("B") && msg.contains("D"));
+    assert!(dir.path().join("d.txt").exists());
+}

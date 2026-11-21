@@ -283,6 +283,26 @@ pub(super) fn multi_menu(
             .expect("dialog"),
         ),
     );
+    let squash_block = commits
+        .iter()
+        .find(|c| c.parents.len() > 1)
+        .map(|c| format!("{} is a merge commit; merge commits cannot be squashed", c.short_hash()))
+        .or_else(|| busy_reason(repo_state, "squash commits"));
+    act(
+        ui,
+        &format!("Squash {n} Commits"),
+        squash_block,
+        RowAction::Dialog(Dialog::Confirm {
+            title: "Squash Commits".into(),
+            text: format!(
+                "Squash {n} commits into one at the position of the oldest? Their messages are combined.\n\n{}\n\nThis rewrites history; later commits get new hashes.",
+                list(10)
+            ),
+            op: Op::SquashCommits(newest_first.clone()),
+            danger: true,
+            ok: format!("Squash {n}"),
+        }),
+    );
     let drop_block = commits
         .iter()
         .find(|c| c.parents.len() != 1)

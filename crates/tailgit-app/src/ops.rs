@@ -25,6 +25,8 @@ pub enum Op {
     Rebase { onto: String },
     DropCommits(Vec<String>),
     UndoDrop { old_head: String, new_head: String },
+    /// Squash these commits into one at the position of the oldest.
+    SquashCommits(Vec<String>),
     /// Reset HEAD to its parent; the commit's changes return to the Changes tab.
     UndoCommit(String),
     EditMessage { hash: String, message: String },
@@ -104,6 +106,7 @@ impl Op {
             Op::DropCommits(h) if h.len() == 1 => format!("Drop commit {}", short(&h[0])),
             Op::DropCommits(h) => format!("Drop {} commits", h.len()),
             Op::UndoDrop { .. } => "Undo drop".into(),
+            Op::SquashCommits(h) => format!("Squash {} commits", h.len()),
             Op::UndoCommit(h) => format!("Undo commit {}", short(h)),
             Op::EditMessage { hash, .. } => format!("Edit message of {}", short(hash)),
             Op::InteractiveRebase { from, .. } => format!("Interactive rebase from {}", short(from)),
@@ -173,6 +176,7 @@ impl Op {
             Op::Rebase { onto } => ops::rebase(git, &onto),
             Op::DropCommits(h) => ops::drop_commits(git, &h),
             Op::UndoDrop { old_head, new_head } => ops::undo_drop(git, &old_head, &new_head),
+            Op::SquashCommits(h) => ops::squash_commits(git, &h, None),
             Op::UndoCommit(h) => ops::undo_commit(git, &h),
             Op::EditMessage { hash, message } => ops::edit_commit_message(git, &hash, &message),
             Op::InteractiveRebase { from, items } => ops::interactive_rebase(git, &from, &items),
