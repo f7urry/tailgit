@@ -20,17 +20,8 @@ pub fn install() {
         &P::quit(None),
     ]);
 
-    let edit = Submenu::new("Edit", true);
-    let _ = edit.append_items(&[
-        &P::undo(None),
-        &P::redo(None),
-        &P::separator(),
-        &P::cut(None),
-        &P::copy(None),
-        &P::paste(None),
-        &P::select_all(None),
-    ]);
-
+    // No Edit menu: its Cmd+C/V/X/A/Z accelerators would be consumed by AppKit and never
+    // reach egui, which handles clipboard shortcuts itself.
     let window = Submenu::new("Window", true);
     let _ = window.append_items(&[
         &P::minimize(None),
@@ -41,13 +32,13 @@ pub fn install() {
 
     let help = Submenu::new("Help", true);
 
-    let _ = menu.append_items(&[&app, &edit, &window, &help]);
+    let _ = menu.append_items(&[&app, &window, &help]);
     menu.init_for_nsapp();
     window.set_as_windows_menu_for_nsapp();
     help.set_as_help_menu_for_nsapp();
 
     // The menu bar must outlive the app.
-    std::mem::forget((menu, app, edit, window, help));
+    std::mem::forget((menu, app, window, help));
 }
 
 #[cfg(not(target_os = "macos"))]

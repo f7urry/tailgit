@@ -1499,7 +1499,7 @@ dependencies = [
 
 [[package]]
 name = "git-core"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "similar",
  "tempfile",
@@ -2266,7 +2266,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "log-graph"
-version = "0.1.0"
+version = "1.1.0"
 
 [[package]]
 name = "memchr"
@@ -3803,7 +3803,7 @@ dependencies = [
 
 [[package]]
 name = "tailgit-app"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "chrono",

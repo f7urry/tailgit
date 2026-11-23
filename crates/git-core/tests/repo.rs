@@ -39,6 +39,24 @@ fn empty_repo_has_empty_log() {
 }
 
 #[test]
+fn numeric_text_matches_subject_and_hash_prefix_still_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = init(dir.path());
+    commit_file(&git, "a.txt", "a", "first");
+    commit_file(&git, "b.txt", "b", "fix [X-7409]");
+    let all = log::read_log(&git, &LogFilter::default()).unwrap();
+    let target = all.iter().find(|c| c.subject == "fix [X-7409]").unwrap().hash.clone();
+
+    let by_text = log::read_log(&git, &LogFilter { text: "7409".into(), ..Default::default() }).unwrap();
+    assert_eq!(by_text.len(), 1);
+    assert_eq!(by_text[0].hash, target);
+
+    let by_hash = log::read_log(&git, &LogFilter { text: target[..7].to_string(), ..Default::default() }).unwrap();
+    assert_eq!(by_hash.len(), 1);
+    assert_eq!(by_hash[0].hash, target);
+}
+
+#[test]
 fn log_refs_status_and_details() {
     let dir = tempfile::tempdir().unwrap();
     let git = init(dir.path());

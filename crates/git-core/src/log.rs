@@ -198,7 +198,7 @@ pub fn log_args(filter: &LogFilter) -> Vec<String> {
         args.push("--regexp-ignore-case".to_string());
     }
     let text = filter.text.trim();
-    if !text.is_empty() && filter.hash_words().is_empty() {
+    if !text.is_empty() {
         args.push(format!("--grep={text}"));
         if filter.regex {
             args.push("--extended-regexp".to_string());
@@ -232,9 +232,21 @@ fn regex_escape(s: &str) -> String {
 /// Loads the commit log for the given filter.
 pub fn read_log(git: &Git, filter: &LogFilter) -> Result<Vec<Commit>> {
     let hash_words = filter.hash_words();
-    if !hash_words.is_empty() {
-        return read_by_hash(git, &hash_words);
+    if hash_words.is_empty() {
+        return read_grep_log(git, filter);
     }
+    // Hash-like text (e.g. a numeric ticket id) may be a hash prefix or message text:
+    // hash matches first, then message matches without duplicates.
+    let mut commits = read_by_hash(git, &hash_words)?;
+    for c in read_grep_log(git, filter)? {
+        if !commits.iter().any(|x| x.hash == c.hash) {
+            commits.push(c);
+        }
+    }
+    Ok(commits)
+}
+
+fn read_grep_log(git: &Git, filter: &LogFilter) -> Result<Vec<Commit>> {
     let args = log_args(filter);
     let mut argv: Vec<&str> = vec!["log"];
     argv.extend(args.iter().map(|s| s.as_str()));
