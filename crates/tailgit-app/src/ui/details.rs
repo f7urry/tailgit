@@ -7,7 +7,7 @@ use crate::repo::RepoView;
 use crate::ui::{file_label, format_full_time, ref_badge};
 
 pub fn show(ui: &mut egui::Ui, view: &mut RepoView) {
-    if view.log.selected_hash.is_none() {
+    if view.log.selected_hash.is_none() && view.split.as_ref().is_none_or(|s| s.selected_hash.is_none()) {
         ui.centered_and_justified(|ui| ui.weak("Select commit to view changes"));
         return;
     }
@@ -108,7 +108,13 @@ fn meta(ui: &mut egui::Ui, view: &mut RepoView, d: &CommitDetails) {
             }
         }
     });
-    if let Some(labels) = view.log.data.as_ref().and_then(|data| data.labels.get(&d.hash)).cloned() {
+    if let Some(labels) = view
+        .log
+        .data
+        .iter()
+        .chain(view.split.iter().flat_map(|s| s.data.iter()))
+        .find_map(|data| data.labels.get(&d.hash))
+        .cloned() {
         ui.horizontal_wrapped(|ui| {
             for l in &labels {
                 ref_badge(ui, l);

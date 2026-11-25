@@ -166,7 +166,7 @@ fn row_offsets(commits: &[Commit], tall: impl Fn(&Commit) -> bool) -> Vec<f32> {
 
 /// Arrow / page / home / end / select-all navigation when no text field has focus.
 fn keyboard_action(ui: &egui::Ui, view: &mut RepoView, n: usize) -> Option<RowAction> {
-    if ui.ctx().memory(|m| m.focused().is_some()) || view.dialog.is_some() {
+    if ui.ctx().memory(|m| m.focused().is_some()) || view.dialog.is_some() || !view.log.keyboard {
         return None;
     }
     let page = view.log.visible.len().max(1);

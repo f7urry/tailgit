@@ -93,6 +93,45 @@ pub struct LogState {
     pub anchor: Option<String>,
     pub scroll_to: Option<usize>,
     pub visible: std::ops::Range<usize>,
+    /// Whether arrow keys drive this log (false for the unfocused split pane).
+    pub keyboard: bool,
+}
+
+impl LogState {
+    pub fn new(inputs: FilterInputs) -> LogState {
+        LogState {
+            data: None,
+            loading: false,
+            generation: 0,
+            error: None,
+            inputs,
+            max_count: PAGE,
+            selected: None,
+            selected_hash: None,
+            multi: Default::default(),
+            anchor: None,
+            scroll_to: None,
+            visible: 0..0,
+            keyboard: true,
+        }
+    }
+
+    /// Drops the commit selection (another pane took focus).
+    pub fn clear_selection(&mut self) {
+        self.selected = None;
+        self.selected_hash = None;
+        self.multi.clear();
+        self.anchor = None;
+        self.keyboard = false;
+    }
+
+    fn reload(&mut self, jobs: &Jobs, split: bool, topo_order: bool) {
+        self.generation += 1;
+        self.loading = true;
+        let mut filter = self.inputs.to_filter(self.max_count);
+        filter.topo_order = topo_order;
+        jobs.load_log(self.generation, split, filter);
+    }
 }
 
 pub struct DiffView {
@@ -123,6 +162,9 @@ pub struct RepoView {
     pub root: String,
     pub name: String,
     pub log: LogState,
+    /// Branch split panel: history of the branch clicked in the sidebar,
+    /// shown next to the current checkout (Settings > Branch click).
+    pub split: Option<LogState>,
     pub details: Option<Result<CommitDetails, String>>,
     pub containing: Option<(String, Option<BranchList>)>,
     pub diff: Option<DiffView>,
@@ -171,20 +213,8 @@ impl RepoView {
             _watcher: watcher,
             root,
             name,
-            log: LogState {
-                data: None,
-                loading: false,
-                generation: 0,
-                error: None,
-                inputs: FilterInputs::default(),
-                max_count: PAGE,
-                selected: None,
-                selected_hash: None,
-                multi: Default::default(),
-                anchor: None,
-                scroll_to: None,
-                visible: 0..0,
-            },
+            log: LogState::new(FilterInputs::default()),
+            split: None,
             details: None,
             containing: None,
             diff: None,
@@ -224,16 +254,73 @@ impl RepoView {
     }
 
     pub fn reload_log(&mut self) {
-        self.log.generation += 1;
-        self.log.loading = true;
-        let mut filter = self.log.inputs.to_filter(self.log.max_count);
-        filter.topo_order = self.topo_order;
-        self.jobs.load_log(self.log.generation, filter);
+        self.log.reload(&self.jobs, false, self.topo_order);
+        if let Some(s) = &mut self.split {
+            s.reload(&self.jobs, true, self.topo_order);
+        }
     }
 
     pub fn apply_filter(&mut self) {
         self.log.max_count = PAGE;
+        // The split pane follows the main filters, keeping its own branch.
+        if let Some(s) = &mut self.split {
+            let branch = s.inputs.branch.take();
+            s.inputs = self.log.inputs.clone();
+            s.inputs.branch = branch;
+            s.max_count = PAGE;
+        }
         self.reload_log();
+    }
+
+    /// Shows `current` (the checkout) in the main log and `branch` in the split panel.
+    pub fn open_split(&mut self, branch: String, current: String) {
+        self.log.inputs.branch = Some(current);
+        let mut inputs = self.log.inputs.clone();
+        inputs.branch = Some(branch);
+        let mut split = LogState::new(inputs);
+        split.keyboard = false;
+        self.log.keyboard = true;
+        self.split = Some(split);
+        self.apply_filter();
+    }
+
+    pub fn close_split(&mut self) {
+        if let Some(s) = self.split.take() {
+            if s.selected_hash.is_some() {
+                // The focused commit lived in the split pane.
+                self.details = None;
+                self.containing = None;
+            }
+        }
+        self.log.keyboard = true;
+    }
+
+    /// Branch shown in the split panel, if open.
+    pub fn split_branch(&self) -> Option<&str> {
+        self.split.as_ref().and_then(|s| s.inputs.branch.as_deref())
+    }
+
+    /// Commit focused in either pane (main log or split panel).
+    pub fn is_focused_hash(&self, hash: &str) -> bool {
+        self.log.selected_hash.as_deref() == Some(hash)
+            || self.split.as_ref().is_some_and(|s| s.selected_hash.as_deref() == Some(hash))
+    }
+
+    /// Keeps a single focused commit across the two panes: whichever pane
+    /// changed its selection since `prev` takes focus and keyboard navigation.
+    pub fn sync_split_focus(&mut self, prev_main: Option<String>, prev_split: Option<String>) {
+        let Some(s) = &mut self.split else { return };
+        if self.log.selected_hash.is_some() && self.log.selected_hash != prev_main {
+            s.clear_selection();
+            self.log.keyboard = true;
+        } else if s.selected_hash.is_some() && s.selected_hash != prev_split {
+            self.log.clear_selection();
+            s.keyboard = true;
+        }
+    }
+
+    fn split_has_selection(&self) -> bool {
+        self.split.as_ref().is_some_and(|s| s.selected_hash.is_some())
     }
 
     pub fn load_more(&mut self) {
@@ -507,7 +594,27 @@ impl RepoView {
 
     fn handle(&mut self, msg: Msg) {
         match msg {
-            Msg::Log { generation, result } => {
+            Msg::Log { generation, split: true, result } => {
+                let Some(s) = &mut self.split else { return };
+                if generation != s.generation {
+                    return;
+                }
+                s.loading = false;
+                match result {
+                    Ok(data) => {
+                        s.error = None;
+                        s.selected = s.selected_hash.as_ref().and_then(|h| data.index.get(h).copied());
+                        s.multi.retain(|h| data.index.contains_key(h));
+                        if s.selected.is_none() && s.selected_hash.take().is_some() {
+                            s.multi.clear();
+                            self.details = None;
+                        }
+                        s.data = Some(data);
+                    }
+                    Err(e) => s.error = Some(e),
+                }
+            }
+            Msg::Log { generation, split: false, result } => {
                 if generation != self.log.generation {
                     return;
                 }
@@ -522,13 +629,16 @@ impl RepoView {
                             .and_then(|h| data.index.get(h).copied());
                         self.log.selected = selected;
                         self.log.multi.retain(|h| data.index.contains_key(h));
+                        let split_focused = self.split_has_selection();
                         if selected.is_none() {
                             self.log.selected_hash = None;
-                            self.details = None;
+                            if !split_focused {
+                                self.details = None;
+                            }
                             self.log.multi.clear();
                         }
                         self.log.data = Some(data);
-                        if self.log.selected.is_none() && !self.log.inputs.is_empty() {
+                        if self.log.selected.is_none() && !self.log.inputs.is_empty() && !split_focused {
                             if let Some(d) = &self.log.data {
                                 if !d.commits.is_empty() {
                                     self.select_row(0);
@@ -540,12 +650,12 @@ impl RepoView {
                 }
             }
             Msg::Details { hash, result } => {
-                if self.log.selected_hash.as_deref() == Some(hash.as_str()) {
+                if self.is_focused_hash(&hash) {
                     self.details = Some(result);
                 }
             }
             Msg::Containing { hash, result } => {
-                if self.log.selected_hash.as_deref() == Some(hash.as_str()) {
+                if self.is_focused_hash(&hash) {
                     self.containing = Some((hash, Some(result)));
                 }
             }

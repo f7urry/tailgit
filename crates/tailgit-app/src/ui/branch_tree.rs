@@ -65,6 +65,8 @@ impl Folder {
 
 enum Action {
     Filter(Option<String>),
+    /// Single click on a branch / tag leaf (filter, or open the split panel).
+    Click { name: String, current: bool },
     Op(Op),
     Dialog(Dialog),
     WorktreeDiff(String),
@@ -132,6 +134,7 @@ pub fn show(ui: &mut egui::Ui, view: &mut RepoView, settings: &mut Settings) {
         .collect();
     let remotes = refs.remotes.clone();
     let selected = view.log.inputs.branch.clone();
+    let split = view.split_branch().map(str::to_string);
 
     let mut actions: Vec<Action> = Vec::new();
     let search_box = ui.add(
@@ -151,6 +154,7 @@ pub fn show(ui: &mut egui::Ui, view: &mut RepoView, settings: &mut Settings) {
     let ctx = Ctx {
         current: current.as_deref(),
         selected: selected.as_deref(),
+        split: split.as_deref(),
         remotes: &remotes,
         remote_names: &remote_names,
     };
@@ -181,8 +185,25 @@ pub fn show(ui: &mut egui::Ui, view: &mut RepoView, settings: &mut Settings) {
     for a in actions {
         match a {
             Action::Filter(f) => {
+                view.close_split();
                 view.log.inputs.branch = f;
                 view.apply_filter();
+            }
+            Action::Click { name, current: is_current } => {
+                if split.as_deref() == Some(name.as_str()) {
+                    // Clicking the split branch again closes the panel.
+                    view.close_split();
+                    view.log.inputs.branch = None;
+                    view.apply_filter();
+                } else if settings.branch_click_split && !is_current {
+                    view.open_split(name, current.clone().unwrap_or_else(|| "HEAD".into()));
+                } else {
+                    // Current checkout (or split disabled): plain filter toggle, no split panel.
+                    let toggle_off = split.is_none() && selected.as_deref() == Some(name.as_str());
+                    view.close_split();
+                    view.log.inputs.branch = if toggle_off { None } else { Some(name) };
+                    view.apply_filter();
+                }
             }
             Action::Op(op) => view.run(op),
             Action::Dialog(d) => view.dialog = Some(d),
@@ -199,6 +220,8 @@ pub fn show(ui: &mut egui::Ui, view: &mut RepoView, settings: &mut Settings) {
 struct Ctx<'a> {
     current: Option<&'a str>,
     selected: Option<&'a str>,
+    /// Branch shown in the split panel.
+    split: Option<&'a str>,
     remotes: &'a [String],
     remote_names: &'a [String],
 }
@@ -268,7 +291,7 @@ fn icon_job(ui: &egui::Ui, icon: &str, color: egui::Color32, label: &str) -> egu
 }
 
 fn leaf(ui: &mut egui::Ui, label: &str, item: &Item, ctx: &Ctx, actions: &mut Vec<Action>) {
-    let selected = ctx.selected == Some(item.name.as_str());
+    let selected = ctx.selected == Some(item.name.as_str()) || ctx.split == Some(item.name.as_str());
     let icon = match (item.current, item.favorite, item.kind) {
         (true, _, _) => "\u{f058}",
         (_, true, _) => "\u{f005}",
@@ -309,7 +332,7 @@ fn leaf(ui: &mut egui::Ui, label: &str, item: &Item, ctx: &Ctx, actions: &mut Ve
     if r.double_clicked() {
         actions.push(checkout_action(item, ctx));
     } else if r.clicked() {
-        actions.push(Action::Filter(if selected { None } else { Some(item.name.clone()) }));
+        actions.push(Action::Click { name: item.name.clone(), current: item.current });
     }
     r.context_menu(|ui| menu(ui, item, ctx, actions));
 }

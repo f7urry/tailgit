@@ -116,6 +116,11 @@ impl eframe::App for TailApp {
             view.reload_log();
         }
         view.poll();
+        if view.split.is_some() && !settings.branch_click_split {
+            view.close_split();
+            view.log.inputs.branch = None;
+            view.apply_filter();
+        }
 
         let focused = ui.input(|i| i.viewport().focused.unwrap_or(true));
         if focused && !self.was_focused {

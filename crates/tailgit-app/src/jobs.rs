@@ -47,6 +47,8 @@ pub struct DiffRequest {
 pub enum Msg {
     Log {
         generation: u64,
+        /// Result for the branch split panel rather than the main log.
+        split: bool,
         result: Result<Box<LogData>, String>,
     },
     Details {
@@ -108,10 +110,10 @@ impl Jobs {
         });
     }
 
-    pub fn load_log(&self, generation: u64, filter: LogFilter) {
+    pub fn load_log(&self, generation: u64, split: bool, filter: LogFilter) {
         self.spawn(move |git, tx| {
             let result = build_log(git, &filter).map(Box::new).map_err(|e| e.to_string());
-            let _ = tx.send(Msg::Log { generation, result });
+            let _ = tx.send(Msg::Log { generation, split, result });
         });
     }
 

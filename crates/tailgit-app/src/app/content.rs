@@ -4,7 +4,7 @@ use eframe::egui;
 
 use super::widgets::sidebar;
 use crate::repo::{RepoView, Tab};
-use crate::settings::Settings;
+use crate::settings::{Settings, SplitOrientation};
 use crate::ui::{self, PaneLayout};
 
 /// Three-dot grip drawn in the gap between two resizable panes.
@@ -56,6 +56,8 @@ pub(super) fn tab_panels(ui: &mut egui::Ui, view: &mut RepoView, settings: &mut 
             egui::CentralPanel::default().frame(isl((6, 6, 0, 3))).show(ui, |ui| ui::details::show(ui, view));
         }
         Tab::Log => {
+            let prev_main = view.log.selected_hash.clone();
+            let prev_split = view.split.as_ref().and_then(|s| s.selected_hash.clone());
             if lay == PaneLayout::All && show_details {
                 let r = egui::Panel::right("details")
                     .frame(isl((3, 6, 0, 3)))
@@ -93,8 +95,13 @@ pub(super) fn tab_panels(ui: &mut egui::Ui, view: &mut RepoView, settings: &mut 
             egui::CentralPanel::default().frame(isl((3, 3, 0, 3))).show(ui, |ui| {
                 ui::log_table::filter_bar(ui, view);
                 ui.add_space(4.0);
-                ui::log_table::table(ui, view);
+                if view.split.is_some() {
+                    split_logs(ui, view, settings.split_orientation, dark);
+                } else {
+                    ui::log_table::table(ui, view);
+                }
             });
+            view.sync_split_focus(prev_main, prev_split);
         }
         Tab::Commit | Tab::Stash => {
             let list = |ui: &mut egui::Ui, view: &mut RepoView| {
@@ -140,4 +147,79 @@ pub(super) fn tab_panels(ui: &mut egui::Ui, view: &mut RepoView, settings: &mut 
             }
         }
     }
+}
+
+/// Current checkout (main log) and the clicked branch (split log) in two resizable panes.
+fn split_logs(ui: &mut egui::Ui, view: &mut RepoView, orientation: SplitOrientation, dark: bool) {
+    let mut close = false;
+    let (panel, margin) = match orientation {
+        SplitOrientation::Vertical => (
+            egui::Panel::right("split_log_v").default_size(ui.available_width() / 2.0).min_size(240.0),
+            egui::Margin { left: 8, right: 0, top: 0, bottom: 0 },
+        ),
+        SplitOrientation::Horizontal => (
+            egui::Panel::bottom("split_log_h").default_size(ui.available_height() / 2.0).min_size(120.0),
+            egui::Margin { left: 0, right: 0, top: 8, bottom: 0 },
+        ),
+    };
+    let r = panel
+        .resizable(true)
+        .show_separator_line(true)
+        .frame(egui::Frame::new().inner_margin(margin))
+        .show(ui, |ui| {
+            ui.push_id("split_pane", |ui| {
+                let branch = view.split_branch().unwrap_or_default().to_string();
+                close = pane_label(ui, "Selected branch", &branch, crate::theme::sys::blue(dark), true);
+                split_table(ui, view);
+            });
+        })
+        .response
+        .rect;
+    match orientation {
+        SplitOrientation::Vertical => grip(ui, egui::pos2(r.left() + 4.0, r.center().y), true, dark),
+        SplitOrientation::Horizontal => grip(ui, egui::pos2(r.center().x, r.top() + 4.0), false, dark),
+    }
+    egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
+        ui.push_id("main_pane", |ui| {
+            let current = view.log.data.as_ref().and_then(|d| d.refs.head.branch_name()).unwrap_or("HEAD").to_string();
+            let shown = view.log.inputs.branch.clone().unwrap_or_else(|| "All branches".into());
+            let caption = if shown == current || shown == "HEAD" { "Current checkout" } else { "Branch" };
+            pane_label(ui, caption, &shown, crate::theme::sys::green(dark), false);
+            ui::log_table::table(ui, view);
+        });
+    });
+    if close {
+        view.close_split();
+        view.log.inputs.branch = None;
+        view.apply_filter();
+    }
+}
+
+/// Caption above a split pane: branch icon, caption and branch name; returns true when closed.
+fn pane_label(ui: &mut egui::Ui, caption: &str, branch: &str, color: egui::Color32, closable: bool) -> bool {
+    let mut close = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(egui::RichText::new("\u{f126}").color(color));
+        ui.label(egui::RichText::new(caption).weak());
+        ui.label(egui::RichText::new(branch).strong().color(color));
+        if closable {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new("\u{f00d}").frame(false)).on_hover_text("Close split panel").clicked() {
+                    close = true;
+                }
+            });
+        }
+    });
+    ui.add_space(2.0);
+    close
+}
+
+/// Draws the split log with the regular table by swapping it into `view.log` for the call.
+fn split_table(ui: &mut egui::Ui, view: &mut RepoView) {
+    let Some(mut split) = view.split.take() else { return };
+    std::mem::swap(&mut view.log, &mut split);
+    ui::log_table::table(ui, view);
+    std::mem::swap(&mut view.log, &mut split);
+    view.split = Some(split);
 }

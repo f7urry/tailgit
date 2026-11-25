@@ -52,6 +52,13 @@ pub struct Settings {
     /// How branch / tag labels look.
     #[serde(default)]
     pub label_style: LabelStyle,
+    /// Clicking a branch in the sidebar opens its history in a split panel
+    /// next to the current checkout (instead of filtering the log).
+    #[serde(default)]
+    pub branch_click_split: bool,
+    /// How the branch split panel is arranged.
+    #[serde(default)]
+    pub split_orientation: SplitOrientation,
     /// Commit log column order, widths and visibility.
     #[serde(default)]
     pub log_columns: LogColumns,
@@ -130,6 +137,16 @@ impl LabelPosition {
         (LabelPosition::Column, "Separate column"),
         (LabelPosition::Hidden, "Not visible"),
     ];
+}
+
+/// Branch split panel arrangement (IntelliJ naming: "vertical" = side by side).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SplitOrientation {
+    /// Side by side, separated by a vertical divider.
+    #[default]
+    Vertical,
+    /// Stacked top / bottom, separated by a horizontal divider.
+    Horizontal,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

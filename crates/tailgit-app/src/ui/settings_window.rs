@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, RichText};
 
-use crate::settings::{Appearance, LabelPosition, LabelStyle, Settings};
+use crate::settings::{Appearance, LabelPosition, LabelStyle, Settings, SplitOrientation};
 
 /// Egui temp-data keys read by the diff view.
 pub const DIFF_FONT_SIZE: &str = "diff_font_size";
@@ -37,7 +37,7 @@ fn section(ui: &mut egui::Ui, title: &str) {
 
 /// Shows the window; returns true when any setting changed (already saved).
 pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
-    let before = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, (s.merge_auto_apply, s.label_position, s.label_style));
+    let before = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, (s.merge_auto_apply, s.label_position, s.label_style, s.branch_click_split, s.split_orientation));
     let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(24));
     let modal = egui::Modal::new(egui::Id::NULL.with("settings_modal")).frame(frame).show(ctx, |ui| {
             ui.set_width(460.0);
@@ -141,6 +141,20 @@ pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
                 super::log_table::label_preview(ui, s.label_position, s.label_style);
             });
 
+            row(ui, "Branch click:", |ui| {
+                ui.checkbox(&mut s.branch_click_split, "Open split panel")
+                    .on_hover_text("Clicking a branch in the sidebar shows its history next to the current checkout.");
+                if s.branch_click_split {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        ui.selectable_value(&mut s.split_orientation, SplitOrientation::Vertical, "\u{f0db}  Vertical")
+                            .on_hover_text("Side by side");
+                        ui.selectable_value(&mut s.split_orientation, SplitOrientation::Horizontal, "\u{f0c9}  Horizontal")
+                            .on_hover_text("Top and bottom");
+                    });
+                }
+            });
+
             ui.separator();
             section(ui, "Merge");
             row(ui, "", |ui| {
@@ -150,7 +164,7 @@ pub fn show(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
     if modal.should_close() {
         *open = false;
     }
-    let after = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, (s.merge_auto_apply, s.label_position, s.label_style));
+    let after = (s.appearance, s.ui_font.clone(), s.ui_font_size, s.text_hinting, s.text_subpixel, s.ui_font_weight, s.diff_font_size, s.diff_marks, s.sort_topo, s.side_by_side, (s.merge_auto_apply, s.label_position, s.label_style, s.branch_click_split, s.split_orientation));
     let changed = before != after;
     if changed {
         s.save();
